@@ -1,0 +1,1 @@
+docs/superpowers/plans/2026-08-13-产能验证平台-implementation.md
