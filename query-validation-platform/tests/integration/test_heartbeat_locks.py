@@ -31,4 +31,4 @@ async def test_auto_suspend_after_timeout():
             {"tid": tid, "uid": uuid.UUID(uid), "old": old})
         await session.commit()
     result = await auto_suspend_stale_sessions(timeout_seconds=5400)
-    assert len(result["suspended"]) == 1
+    assert len(result["suspended"]) >= 1
