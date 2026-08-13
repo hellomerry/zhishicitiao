@@ -2,7 +2,7 @@ from sqlalchemy import Column, Boolean, Text, TIMESTAMP
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from src.models.tasks import Base
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class PublishSnapshot(Base):
@@ -11,4 +11,4 @@ class PublishSnapshot(Base):
     task_id = Column(UUID(as_uuid=True), nullable=False)
     snapshot_data = Column(JSONB, nullable=False)
     immutable = Column(Boolean, nullable=False, default=True)
-    created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=datetime.utcnow)
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))

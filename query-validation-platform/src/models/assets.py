@@ -2,7 +2,7 @@ from sqlalchemy import Column, Text, Integer, Boolean, Float, TIMESTAMP
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from src.models.tasks import Base
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class Asset(Base):
@@ -17,7 +17,7 @@ class Asset(Base):
     hash = Column(Text, nullable=False)
     model_version = Column(Text)
     is_illustration = Column(Boolean, nullable=False, default=False)
-    created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=datetime.utcnow)
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
 
 class OcrResult(Base):
@@ -27,7 +27,7 @@ class OcrResult(Base):
     raw_text = Column(Text, nullable=False)
     key_fields = Column(JSONB, nullable=False, default={})
     confidence = Column(Float, nullable=False)
-    created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=datetime.utcnow)
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
 
 class CrossCheck(Base):
@@ -38,4 +38,4 @@ class CrossCheck(Base):
     expected = Column(Text, nullable=False)
     actual = Column(Text, nullable=False)
     matched = Column(Boolean, nullable=False)
-    created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=datetime.utcnow)
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))

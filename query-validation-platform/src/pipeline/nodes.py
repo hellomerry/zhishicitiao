@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import select
 from src.db.session import SessionLocal
 from src.gateway.failover import call_with_failover, DEEPSEEK_MODEL, KIMI_MODEL
@@ -20,20 +20,20 @@ async def execute_node(task_id, node_name: str, input_data: dict, node_fn=None):
             session, task_id, node_name, input_data)
         if event is None:
             return {"skipped": True}
-        event.started_at = datetime.utcnow()
+        event.started_at = datetime.now(timezone.utc)
         try:
             if node_fn:
                 output = await node_fn(input_data)
             else:
                 output = {"node": node_name, "input": input_data}
-            event.finished_at = datetime.utcnow()
+            event.finished_at = datetime.now(timezone.utc)
             event.cost_estimate_cny = output.get("cost_cny", 0)
             event.model_version = output.get("model_version")
             event.prompt_version = output.get("prompt_version")
             await session.commit()
             return output
         except Exception as e:
-            event.finished_at = datetime.utcnow()
+            event.finished_at = datetime.now(timezone.utc)
             event.error_class = type(e).__name__
             event.retry_count = (event.retry_count or 0) + 1
             await session.commit()

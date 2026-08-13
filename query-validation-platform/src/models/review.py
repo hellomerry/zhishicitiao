@@ -2,7 +2,7 @@ from sqlalchemy import Column, Text, Boolean, Integer, Float, TIMESTAMP
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from src.models.tasks import Base
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class RiskClassification(Base):
@@ -11,7 +11,7 @@ class RiskClassification(Base):
     task_id = Column(UUID(as_uuid=True), nullable=False)
     level = Column(Text, nullable=False)
     reasons = Column(JSONB, nullable=False, default=[])
-    classified_at = Column(TIMESTAMP(timezone=True), nullable=False, default=datetime.utcnow)
+    classified_at = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
 
 class ReviewSession(Base):
@@ -37,7 +37,7 @@ class Batch(Base):
     sampling_rate = Column(Float, nullable=False, default=0.20)
     member_count = Column(Integer, nullable=False)
     signoff_status = Column(Text, nullable=False, default="pending")
-    created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=datetime.utcnow)
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     signed_at = Column(TIMESTAMP(timezone=True))
 
 
@@ -59,7 +59,7 @@ class Issue(Base):
     status = Column(Text, nullable=False, default="open")
     created_by = Column(UUID(as_uuid=True))
     closed_by = Column(UUID(as_uuid=True))
-    created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=datetime.utcnow)
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     closed_at = Column(TIMESTAMP(timezone=True))
 
 
@@ -71,4 +71,4 @@ class Approval(Base):
     role = Column(Text, nullable=False)
     approver_id = Column(UUID(as_uuid=True))
     conclusion = Column(Text, nullable=False)
-    signed_at = Column(TIMESTAMP(timezone=True), nullable=False, default=datetime.utcnow)
+    signed_at = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))

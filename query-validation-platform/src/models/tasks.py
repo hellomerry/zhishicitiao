@@ -2,7 +2,7 @@ from sqlalchemy import Column, Integer, Text, TIMESTAMP
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import declarative_base
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 Base = declarative_base()
 
@@ -18,5 +18,5 @@ class Task(Base):
     priority = Column(Text, nullable=False, default="normal")
     status = Column(Text, nullable=False, default="draft")
     template_id = Column(UUID(as_uuid=True))
-    created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=datetime.utcnow)
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     created_by = Column(UUID(as_uuid=True))

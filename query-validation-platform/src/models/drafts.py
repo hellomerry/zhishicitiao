@@ -2,7 +2,7 @@ from sqlalchemy import Column, Text, Integer, Boolean, TIMESTAMP
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from src.models.tasks import Base
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class Draft(Base):
@@ -14,7 +14,7 @@ class Draft(Base):
     model_version = Column(Text, nullable=False)
     prompt_version = Column(Text, nullable=False)
     token_count = Column(Integer)
-    created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=datetime.utcnow)
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
 
 class PageCopy(Base):
@@ -33,5 +33,5 @@ class RuleResult(Base):
     rule_name = Column(Text, nullable=False)
     passed = Column(Boolean, nullable=False)
     details = Column(JSONB, nullable=False, default={})
-    created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=datetime.utcnow)
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 

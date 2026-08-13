@@ -1,6 +1,6 @@
 import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import select
 from src.models.events import NodeEvent
 
@@ -22,7 +22,7 @@ async def check_or_record_node_event(session, task_id, node_name: str,
         return None  # already done, idempotent skip
     event = NodeEvent(
         task_id=task_id, node_name=node_name, node_idempotency_key=key,
-        enqueued_at=datetime.utcnow(),
+        enqueued_at=datetime.now(timezone.utc),
         model_version=model_version, prompt_version=prompt_version,
     )
     session.add(event)
