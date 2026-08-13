@@ -16,3 +16,7 @@ __pycache__/
 
 # Logs
 *.log
+
+# Env (真实密钥不提交，.env.example 保留)
+.env
+query-validation-platform/.env
