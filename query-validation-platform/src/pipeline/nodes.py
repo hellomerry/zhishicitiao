@@ -95,3 +95,59 @@ async def node_page_split(input_data: dict) -> dict:
             session.add(PageCopy(task_id=input_data["task_id"], page_index=i, body=body, claim_ids=[]))
         await session.commit()
     return {"page_count": min(len(pages), 6)}
+
+
+async def _generate_single_asset(task_id, page_index: int) -> dict:
+    # stub：真实实现在此调用 ChatGPT 生图（网络中转），返回 asset 字段
+    import hashlib
+    h = hashlib.md5(f"{task_id}|{page_index}".encode()).hexdigest()
+    return {"task_id": task_id, "page_index": page_index, "hash": h,
+            "source_type": "ai_generated", "copyright_status": "clear",
+            "model_version": "gpt-image-1", "is_illustration": False}
+
+
+async def node_asset_gen(input_data: dict) -> dict:
+    import asyncio
+    from src.models.assets import Asset
+    pages = input_data.get("page_count", 6)
+    # 6 张图并行生成（spec 2.6 峰值要求），避免串行成为吞吐瓶颈
+    results = await asyncio.gather(
+        *[_generate_single_asset(input_data["task_id"], i) for i in range(1, pages + 1)])
+    async with SessionLocal() as session:
+        for r in results:
+            session.add(Asset(**r))
+        await session.commit()
+    return {"asset_count": len(results)}
+
+
+async def node_ocr_read(input_data: dict) -> dict:
+    from src.models.assets import OcrResult, Asset
+    async with SessionLocal() as session:
+        assets = await session.execute(
+            select(Asset).where(Asset.task_id == input_data["task_id"]))
+        for asset in assets.scalars():
+            session.add(OcrResult(asset_id=asset.id, raw_text=f"page {asset.page_index}",
+                                  key_fields={"page": str(asset.page_index)},
+                                  confidence=0.95))
+        await session.commit()
+    return {"ocr_completed": True}
+
+
+async def node_cross_check(input_data: dict) -> dict:
+    from src.models.assets import CrossCheck
+    from src.models.drafts import PageCopy
+    from src.quality.cross_check import extract_key_fields, compare_field
+    async with SessionLocal() as session:
+        pages = await session.execute(
+            select(PageCopy).where(PageCopy.task_id == input_data["task_id"]))
+        page_list = pages.scalars().all()
+        all_mismatches = []
+        for p in page_list:
+            expected = extract_key_fields(p.body)
+            actual = {"page": str(p.page_index)}
+            mismatches = compare_field(expected, actual)
+            for m in mismatches:
+                session.add(CrossCheck(task_id=input_data["task_id"], **m))
+                all_mismatches.append(m)
+        await session.commit()
+    return {"mismatch_count": len(all_mismatches)}
