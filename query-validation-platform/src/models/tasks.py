@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, ForeignKey, Text, TIMESTAMP
+from sqlalchemy import Column, Integer, Text, TIMESTAMP
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import declarative_base
 import uuid
@@ -19,4 +19,4 @@ class Task(Base):
     status = Column(Text, nullable=False, default="draft")
     template_id = Column(UUID(as_uuid=True))
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=datetime.utcnow)
-    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    created_by = Column(UUID(as_uuid=True))
