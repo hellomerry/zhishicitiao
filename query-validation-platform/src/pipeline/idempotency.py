@@ -6,7 +6,7 @@ from src.models.events import NodeEvent
 
 
 def compute_node_key(task_id: str, node_name: str, payload: dict) -> str:
-    payload_str = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    payload_str = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
     raw = f"{task_id}|{node_name}|{payload_str}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
