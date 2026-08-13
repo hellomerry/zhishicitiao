@@ -1,10 +1,12 @@
 import uuid
+from datetime import datetime
 from fastapi import APIRouter
 from pydantic import BaseModel
 from sqlalchemy import select
 from src.db.session import SessionLocal
 from src.models.review import ReviewSession
 from src.review.locks import acquire_lock
+from src.review.heartbeat import record_heartbeat
 
 router = APIRouter()
 
@@ -18,6 +20,18 @@ class ClaimIn(BaseModel):
 @router.post("/api/review/claim")
 async def claim(payload: ClaimIn):
     return await acquire_lock(payload.task_id, payload.role, payload.reviewer_id)
+
+
+class HeartbeatIn(BaseModel):
+    task_id: str
+    role: str
+    reviewer_id: str
+    client_ts: datetime | None = None
+
+
+@router.post("/api/review/heartbeat")
+async def heartbeat(payload: HeartbeatIn):
+    return await record_heartbeat(payload.task_id, payload.role, payload.reviewer_id, payload.client_ts)
 
 
 @router.get("/api/review/queue/{role}")
