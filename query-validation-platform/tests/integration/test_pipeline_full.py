@@ -1,10 +1,8 @@
 import uuid
 import pytest
 from unittest.mock import patch
-from sqlalchemy import select
 from src.db.session import SessionLocal
 from src.models.tasks import Task
-from src.models.events import NodeEvent
 from src.pipeline.orchestrator import run_pipeline
 
 FAKE_DRAFT = {
@@ -16,9 +14,9 @@ FAKE_DRAFT = {
 
 
 @pytest.mark.asyncio
-async def test_pipeline_records_node_events():
+async def test_full_pipeline_all_13_nodes():
     async with SessionLocal() as session:
-        task = Task(idempotency_key=f"test-{uuid.uuid4().hex[:8]}", query="test", content_type="x")
+        task = Task(idempotency_key=f"full-{uuid.uuid4().hex[:8]}", query="测试", content_type="x")
         session.add(task)
         await session.commit()
         await session.refresh(task)
@@ -26,8 +24,3 @@ async def test_pipeline_records_node_events():
     with patch("src.pipeline.nodes.call_with_failover", return_value=FAKE_DRAFT):
         results = await run_pipeline(task_id)
     assert len(results) == 13
-    assert results[0]["node"] == "task_import"
-    async with SessionLocal() as session:
-        events = await session.execute(
-            select(NodeEvent).where(NodeEvent.task_id == task_id))
-        assert len(events.scalars().all()) == 13

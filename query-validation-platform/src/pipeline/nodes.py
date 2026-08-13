@@ -151,3 +151,85 @@ async def node_cross_check(input_data: dict) -> dict:
                 all_mismatches.append(m)
         await session.commit()
     return {"mismatch_count": len(all_mismatches)}
+
+
+async def node_risk_classify(input_data: dict) -> dict:
+    from src.models.assets import CrossCheck
+    from src.models.drafts import RuleResult
+    from src.models.review import RiskClassification, Issue
+    from src.models.entities import Claim, Evidence
+    from src.risk.classifier import classify
+    async with SessionLocal() as session:
+        rules = await session.execute(select(RuleResult).where(RuleResult.task_id == input_data["task_id"]))
+        checks = await session.execute(select(CrossCheck).where(CrossCheck.task_id == input_data["task_id"]))
+        rule_list = [{"passed": r.passed, "rule_name": r.rule_name} for r in rules.scalars()]
+        check_list = [{"matched": c.matched} for c in checks.scalars()]
+        # 证据完整性：P0/P1 关键事实点必须有支撑证据，否则 evidence_complete=False
+        evidence_complete = True
+        claims = await session.execute(
+            select(Claim).where(Claim.task_id == input_data["task_id"],
+                                Claim.risk_level.in_(["P0", "P1"])))
+        for claim in claims.scalars():
+            ev = await session.execute(select(Evidence).where(Evidence.claim_id == claim.id))
+            if ev.first() is None:
+                evidence_complete = False
+                break
+        # P0 问题：存在未关闭的 P0 问题单即 has_p0_issue=True
+        p0 = await session.execute(
+            select(Issue).where(Issue.task_id == input_data["task_id"],
+                                Issue.priority == "P0",
+                                Issue.status == "open"))
+        has_p0_issue = p0.first() is not None
+        level, reasons = classify(rule_list, check_list, evidence_complete, has_p0_issue)
+        rc = RiskClassification(task_id=input_data["task_id"], level=level, reasons=reasons)
+        session.add(rc)
+        await session.commit()
+    return {"level": level, "reasons": reasons}
+
+
+async def node_review_queue(input_data: dict) -> dict:
+    from src.models.review import ReviewSession
+    async with SessionLocal() as session:
+        for role in ["A", "B", "C"]:
+            session.add(ReviewSession(task_id=input_data["task_id"], role=role))
+        await session.commit()
+    return {"queued": ["A", "B", "C"]}
+
+
+async def node_batch_signoff(input_data: dict) -> dict:
+    from src.models.review import Batch
+    async with SessionLocal() as session:
+        b = Batch(risk_level="green", sampling_rate=0.20, member_count=1)
+        session.add(b)
+        await session.commit()
+    return {"batch_id": str(b.id)}
+
+
+async def node_publish_snapshot(input_data: dict) -> dict:
+    from src.models.snapshots import PublishSnapshot
+    from src.models.assets import Asset
+    from src.models.review import Issue
+    async with SessionLocal() as session:
+        # 交付合同校验：页数=6、顺序、一页一图（缺页/错序/两图同页必驳回）
+        assets = await session.execute(
+            select(Asset).where(Asset.task_id == input_data["task_id"]).order_by(Asset.page_index))
+        asset_list = assets.scalars().all()
+        delivery_errors = []
+        page_indexes = [a.page_index for a in asset_list]
+        if len(asset_list) != 6:
+            delivery_errors.append(f"缺页或多余页：期望 6 页，实际 {len(asset_list)} 页")
+        if sorted(page_indexes) != [1, 2, 3, 4, 5, 6]:
+            delivery_errors.append(f"页序错误：{page_indexes}")
+        if len(page_indexes) != len(set(page_indexes)):
+            delivery_errors.append(f"两图同页：{page_indexes}")
+        if delivery_errors:
+            # 交付不合格转红色：写入 P0 问题单，不生成快照
+            for err in delivery_errors:
+                session.add(Issue(task_id=input_data["task_id"], role="B",
+                                  priority="P0", description=err))
+            await session.commit()
+            return {"delivery_errors": delivery_errors, "snapshot_created": False}
+        s = PublishSnapshot(task_id=input_data["task_id"], snapshot_data={"frozen": True})
+        session.add(s)
+        await session.commit()
+    return {"snapshot_id": str(s.id), "delivery_errors": []}
