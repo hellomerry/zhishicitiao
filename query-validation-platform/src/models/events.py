@@ -1,5 +1,5 @@
-from sqlalchemy import Column, Integer, Numeric, Text, Boolean
-from sqlalchemy.dialects.postgresql import UUID, TIMESTAMPTZ
+from sqlalchemy import Column, Integer, Numeric, Text, Boolean, TIMESTAMP
+from sqlalchemy.dialects.postgresql import UUID
 from src.models.tasks import Base
 import uuid
 from datetime import datetime
@@ -11,9 +11,9 @@ class NodeEvent(Base):
     task_id = Column(UUID(as_uuid=True), nullable=False)
     node_name = Column(Text, nullable=False)
     node_idempotency_key = Column(Text, nullable=False)
-    enqueued_at = Column(TIMESTAMPTZ, nullable=False)
-    started_at = Column(TIMESTAMPTZ)
-    finished_at = Column(TIMESTAMPTZ)
+    enqueued_at = Column(TIMESTAMP(timezone=True), nullable=False)
+    started_at = Column(TIMESTAMP(timezone=True))
+    finished_at = Column(TIMESTAMP(timezone=True))
     model_version = Column(Text)
     prompt_version = Column(Text)
     retry_count = Column(Integer, nullable=False, default=0)
