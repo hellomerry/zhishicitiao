@@ -97,22 +97,29 @@ async def node_page_split(input_data: dict) -> dict:
     return {"page_count": min(len(pages), 6)}
 
 
-async def _generate_single_asset(task_id, page_index: int) -> dict:
-    # stub：真实实现在此调用 ChatGPT 生图（网络中转），返回 asset 字段
-    import hashlib
-    h = hashlib.md5(f"{task_id}|{page_index}".encode()).hexdigest()
-    return {"task_id": task_id, "page_index": page_index, "hash": h,
+async def _generate_single_asset(task_id, page_index: int, prompt: str) -> dict:
+    from src.gateway.image_gen import generate_image
+    r = await generate_image(prompt)
+    return {"task_id": task_id, "page_index": page_index, "hash": r["hash"],
+            "image_url": r["image_url"],
             "source_type": "ai_generated", "copyright_status": "clear",
-            "model_version": "gpt-image-1", "is_illustration": False}
+            "model_version": r["model_version"], "is_illustration": False}
 
 
 async def node_asset_gen(input_data: dict) -> dict:
     import asyncio
     from src.models.assets import Asset
-    pages = input_data.get("page_count", 6)
+    from src.models.drafts import PageCopy
+    async with SessionLocal() as session:
+        pages = await session.execute(
+            select(PageCopy).where(PageCopy.task_id == input_data["task_id"]))
+        page_list = pages.scalars().all()
+    prompts = [p.body[:500] for p in page_list]
+    while len(prompts) < 6:
+        prompts.append("图文卡片")
     # 6 张图并行生成（spec 2.6 峰值要求），避免串行成为吞吐瓶颈
     results = await asyncio.gather(
-        *[_generate_single_asset(input_data["task_id"], i) for i in range(1, pages + 1)])
+        *[_generate_single_asset(input_data["task_id"], i, prompts[i - 1]) for i in range(1, 7)])
     async with SessionLocal() as session:
         for r in results:
             session.add(Asset(**r))

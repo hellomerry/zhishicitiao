@@ -15,6 +15,7 @@ class Asset(Base):
     copyright_status = Column(Text, nullable=False)
     license_scope = Column(Text)
     hash = Column(Text, nullable=False)
+    image_url = Column(Text)
     model_version = Column(Text)
     is_illustration = Column(Boolean, nullable=False, default=False)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
