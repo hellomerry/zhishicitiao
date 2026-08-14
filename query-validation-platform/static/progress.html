@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>进度查看 · 产能验证平台</title>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --border:#e0e2e6; --text:#1a1d21; --muted:#6b7280; --blue:#2563eb; --green:#16a34a; --yellow:#d97706; --red:#dc2626; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--text); padding:24px; max-width:900px; margin:0 auto; }
+  h1 { font-size:20px; margin-bottom:16px; }
+  .nav { margin-bottom:20px; } .nav a { color:var(--blue); margin-right:16px; text-decoration:none; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:20px; margin-bottom:16px; }
+  .status-grid { display:grid; grid-template-columns:repeat(5,1fr); gap:12px; }
+  .stat { text-align:center; padding:16px; border:1px solid var(--border); border-radius:8px; }
+  .stat .n { font-size:28px; font-weight:700; }
+  .stat .l { font-size:12px; color:var(--muted); margin-top:4px; }
+  .stat.draft .n{color:var(--muted);} .stat.processing .n{color:var(--blue);}
+  .stat.review .n{color:var(--yellow);} .stat.failed .n{color:var(--red);} .stat.approved .n{color:var(--green);}
+  .node-row { display:flex; align-items:center; gap:10px; padding:6px 0; }
+  .node-name { width:140px; font-size:13px; }
+  .node-bar { flex:1; height:12px; background:#f0f0f0; border-radius:6px; overflow:hidden; }
+  .node-fill { height:100%; background:var(--blue); transition:width .5s; }
+  .node-count { width:60px; font-size:12px; color:var(--muted); text-align:right; }
+  .refresh { padding:8px 16px; border:none; border-radius:8px; background:var(--card); border:1px solid var(--border); cursor:pointer; margin-left:auto; }
+</style>
+</head>
+<body>
+<h1>进度查看</h1>
+<div class="nav">
+  <a href="/workbench">审核工作台</a>
+  <a href="/import">导入 Query</a>
+  <a href="/dashboard">产能看板</a>
+  <button class="refresh" onclick="load()">刷新</button>
+</div>
+<div class="card">
+  <h2 style="font-size:14px;margin-bottom:12px;">任务状态</h2>
+  <div class="status-grid" id="status"></div>
+</div>
+<div class="card">
+  <h2 style="font-size:14px;margin-bottom:12px;">流水线节点完成数</h2>
+  <div id="nodes"></div>
+</div>
+<script>
+const NODES=['task_import','entity_bind','evidence_build','draft_gen','rule_check','page_split','asset_gen','ocr_read','cross_check','risk_classify','review_queue','batch_signoff','publish_snapshot'];
+async function load(){
+  const r=await fetch('/api/tasks/stats');
+  const d=await r.json();
+  // 状态统计
+  const s=d.by_status||{};
+  const total=d.total||0;
+  const items=[['draft','草稿'],['processing','生产中'],['review','待审核'],['failed','失败'],['approved','已完成']];
+  document.getElementById('status').innerHTML=items.map(([k,label])=>{
+    const n=s[k]||0;
+    return `<div class="stat ${k}"><div class="n">${n}</div><div class="l">${label}</div></div>`;
+  }).join('')+`<div class="stat"><div class="n">${total}</div><div class="l">总计</div></div>`;
+  // 节点进度
+  const nc=d.nodes_completed||{};
+  const maxNode=Math.max(1,...Object.values(nc));
+  document.getElementById('nodes').innerHTML=NODES.map(n=>{
+    const c=nc[n]||0;
+    const pct=Math.min(100,Math.round(c/maxNode*100));
+    return `<div class="node-row"><div class="node-name">${n}</div><div class="node-bar"><div class="node-fill" style="width:${pct}%"></div></div><div class="node-count">${c}</div></div>`;
+  }).join('');
+}
+load();
+setInterval(load, 5000);
+</script>
+</body>
+</html>

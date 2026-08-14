@@ -33,3 +33,13 @@ async def workbench():
 @app.get("/dashboard")
 async def dashboard():
     return RedirectResponse(url="/static/dashboard.html")
+
+
+@app.get("/import")
+async def import_page():
+    return RedirectResponse(url="/static/import.html")
+
+
+@app.get("/progress")
+async def progress_page():
+    return RedirectResponse(url="/static/progress.html")
