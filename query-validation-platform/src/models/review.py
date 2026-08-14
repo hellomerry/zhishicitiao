@@ -29,6 +29,18 @@ class ReviewSession(Base):
     time_inconsistency_flag = Column(Boolean, nullable=False, default=False)
 
 
+class ReviewAction(Base):
+    __tablename__ = "review_actions"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    review_session_id = Column(UUID(as_uuid=True), nullable=False)
+    idempotency_key = Column(Text, unique=True, nullable=False)
+    action_type = Column(Text, nullable=False)
+    client_ts = Column(TIMESTAMP(timezone=True), nullable=False)
+    server_ts = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    payload = Column(JSONB, nullable=False, default={})
+    duration_ms = Column(Integer)
+
+
 class Batch(Base):
     __tablename__ = "batches"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
