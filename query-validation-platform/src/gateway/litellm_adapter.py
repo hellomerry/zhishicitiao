@@ -22,14 +22,14 @@ class ModelRefusalError(Exception):
 
 
 async def call_provider(model: str, prompt: str, api_key: str = None,
-                        max_tokens: int = 1024) -> dict:
+                        api_base: str = None, max_tokens: int = 1024) -> dict:
     litellm.api_key = api_key or settings.deepseek_api_key
     start = time.time()
-    response = await litellm.acompletion(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=max_tokens,
-    )
+    kwargs = dict(model=model, messages=[{"role": "user", "content": prompt}],
+                  max_tokens=max_tokens)
+    if api_base:
+        kwargs["api_base"] = api_base
+    response = await litellm.acompletion(**kwargs)
     elapsed = time.time() - start
     text = response.choices[0].message.content if response.choices else None
     if text is None or text.strip() == "":

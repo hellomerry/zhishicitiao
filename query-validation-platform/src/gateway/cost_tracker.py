@@ -11,7 +11,7 @@ def estimate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> flo
     m = model.lower()
     if "deepseek" in m:
         p = PRICING_CNY_PER_1M["deepseek"]
-    elif "moonshot" in m or "kimi" in m:
+    elif "moonshot" in m or "kimi" in m or "k3" in m:
         p = PRICING_CNY_PER_1M["kimi"]
     elif "gpt" in m:
         p = PRICING_CNY_PER_1M["gpt-4o"]
