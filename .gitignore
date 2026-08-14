@@ -20,3 +20,7 @@ __pycache__/
 # Env (真实密钥不提交，.env.example 保留)
 .env
 query-validation-platform/.env
+
+# 打包文件（含真实 API key，禁止提交 GitHub）
+*.tar.gz
+*.zip
