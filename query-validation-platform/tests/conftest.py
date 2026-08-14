@@ -2,7 +2,7 @@ import pytest
 from unittest.mock import patch
 
 FAKE_IMAGE = {"hash": "abc123", "image_url": "https://example.com/i.png", "model_version": "z-image-turbo"}
-FAKE_SEARCH = "搜索结果摘要"
+FAKE_SEARCH = [{"title": "来源", "url": "https://example.com/src", "summary": "搜索结果摘要"}]
 FAKE_IMAGES = [{"title": "实景图", "image_url": "https://example.com/real.png", "source": "bing", "engine": "bing"}]
 
 

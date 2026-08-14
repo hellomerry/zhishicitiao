@@ -18,9 +18,10 @@ class Settings(BaseSettings):
     # 旧 ChatGPT 生图字段（保留占位）
     chatgpt_api_key: str = "sk-zzz"
     chatgpt_proxy_url: str = ""
-    # 搜索（豆包搜索 API 管证据包网页，豆包方舟管搜实景图多模态，两套 key 分开）
+    # 搜索（证据包网页搜索：doubao 结构化 / deepseek 联网，搜实景图：openserp）
+    web_search_provider: str = "doubao"   # doubao（结构化来源）/ deepseek（联网总结）
     doubao_search_key: str = "sk-www"     # 豆包搜索 API：证据包
-    doubao_ark_key: str = "sk-vvv"        # 豆包方舟：搜实景图
+    doubao_ark_key: str = "sk-vvv"        # 豆包方舟：搜实景图（预留）
     # 系统配置
     environment: str = "dev"
     log_level: str = "INFO"

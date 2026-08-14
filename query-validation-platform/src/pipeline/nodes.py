@@ -79,16 +79,18 @@ async def node_evidence_build(input_data: dict) -> dict:
         task = (await session.execute(
             select(Task).where(Task.id == input_data["task_id"]))).scalar_one()
         query = task.query
-    summary = await web_search(query)
+    results = await web_search(query, count=6)
     async with SessionLocal() as session:
         claim = Claim(task_id=input_data["task_id"], claim_text=query,
                       risk_level="P1", position=1)
         session.add(claim)
         await session.flush()
-        session.add(Evidence(claim_id=claim.id, source_url="deepseek-web-search",
-                             source_level="P2", excerpt=summary[:500], supports=True))
+        for r in results:
+            session.add(Evidence(claim_id=claim.id, source_url=r["url"] or "no-url",
+                                 source_level="P2", excerpt=(r["summary"] or "")[:500],
+                                 supports=True))
         await session.commit()
-    return {"evidence_built": True, "summary": summary[:80]}
+    return {"evidence_built": True, "evidence_count": len(results)}
 
 
 async def node_draft_gen(input_data: dict) -> dict:
