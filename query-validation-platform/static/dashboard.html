@@ -7,9 +7,8 @@
 <link rel="stylesheet" href="/static/common.css">
 </head>
 <body>
-<div id="nav"></div>
-<div class="container">
-  <div class="page-title">产能看板 <span class="muted" style="font-size:13px;font-weight:400;" id="updated"></span> <button class="btn btn-outline" style="margin-left:auto;" onclick="load()">刷新</button></div>
+<div id="layout"></div>
+<div class="content">
   <div class="grid grid-4" id="metrics"></div>
   <div style="height:16px"></div>
   <div class="grid grid-2">
@@ -20,7 +19,7 @@
 <script src="/static/common.js"></script>
 <script>
 requireLogin();
-renderNav('dashboard');
+renderLayout('dashboard', '产能看板');
 async function load(){
   const r=await fetch('/api/dashboard/metrics');
   const d=await r.json();

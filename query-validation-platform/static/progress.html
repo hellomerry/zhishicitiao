@@ -7,9 +7,8 @@
 <link rel="stylesheet" href="/static/common.css">
 </head>
 <body>
-<div id="nav"></div>
-<div class="container">
-  <div class="page-title">进度查看 <button class="btn btn-outline" style="margin-left:auto;" onclick="load()">刷新</button></div>
+<div id="layout"></div>
+<div class="content">
   <div class="card">
     <h2>任务状态</h2>
     <div class="grid grid-4" id="status"></div>
@@ -22,7 +21,7 @@
 <script src="/static/common.js"></script>
 <script>
 requireLogin();
-renderNav('progress');
+renderLayout('progress', '进度查看');
 const NODES=['task_import','entity_bind','evidence_build','draft_gen','rule_check','page_split','asset_gen','ocr_read','cross_check','risk_classify','review_queue','batch_signoff','publish_snapshot'];
 const NODE_LABEL={task_import:'任务导入',entity_bind:'搜实景图',evidence_build:'证据+交叉验证',draft_gen:'正文生成',rule_check:'规则质检',page_split:'分页文案',asset_gen:'配图生成',ocr_read:'OCR回读',cross_check:'图文一致性',risk_classify:'风险分流',review_queue:'审核队列',batch_signoff:'批次会签',publish_snapshot:'发布快照'};
 async function load(){

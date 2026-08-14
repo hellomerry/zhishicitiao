@@ -6,7 +6,7 @@
 <title>审核工作台 · 产能验证平台</title>
 <link rel="stylesheet" href="/static/common.css">
 <style>
-  .workbench { display:grid; grid-template-columns:280px 1fr 220px; gap:16px; height:calc(100vh - 54px); padding:16px; }
+  .workbench { display:grid; grid-template-columns:280px 1fr 220px; gap:16px; height:calc(100vh - var(--topbar-h) - 16px); padding:16px; margin-left:var(--sidebar-w); margin-top:var(--topbar-h); }
   .panel { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); overflow-y:auto; display:flex; flex-direction:column; }
   .panel-head { padding:14px 16px; border-bottom:1px solid var(--border); font-size:14px; font-weight:600; display:flex; align-items:center; gap:8px; }
   .panel-body { flex:1; overflow-y:auto; padding:12px; }
@@ -32,7 +32,7 @@
 </style>
 </head>
 <body>
-<div id="nav"></div>
+<div id="layout"></div>
 <div class="workbench">
   <div class="panel">
     <div class="panel-head">待审队列 <span class="tag tag-blue" id="qcount">0</span></div>
@@ -56,7 +56,7 @@
 <script src="/static/common.js"></script>
 <script>
 const user = requireLogin();
-if (user) { renderNav('workbench'); document.title = `${roleName(user.role)} · 审核工作台`; }
+if (user) { renderLayout('workbench', '审核工作台'); document.title = `${roleName(user.role)} · 审核工作台`; }
 
 const API = '';
 let state = { currentTask:null, timerInterval:null, heartbeatInterval:null, startTs:null, suspended:false };

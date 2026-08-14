@@ -7,9 +7,8 @@
 <link rel="stylesheet" href="/static/common.css">
 </head>
 <body>
-<div id="nav"></div>
-<div class="container" style="max-width:760px;">
-  <div class="page-title">导入 Query</div>
+<div id="layout"></div>
+<div class="content" style="max-width:760px;">
   <div class="card">
     <h2>批量导入查询词</h2>
     <label>内容类型</label>
@@ -31,7 +30,7 @@
 <script src="/static/common.js"></script>
 <script>
 requireLogin();
-renderNav('import');
+renderLayout('import', '导入 Query');
 async function submit(){
   const queries=document.getElementById('queries').value.split('\n').map(s=>s.trim()).filter(Boolean);
   const content_type=document.getElementById('ctype').value;
