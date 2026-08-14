@@ -48,6 +48,29 @@ async def _latest_draft_body(session, task_id):
     return draft.body if draft else ""
 
 
+async def node_entity_bind(input_data: dict) -> dict:
+    """搜实景图/实物图，存为 official 素材（供生图参考/人工审核）。"""
+    import hashlib
+    from src.models.tasks import Task
+    from src.models.assets import Asset
+    from src.gateway.image_search import search_image
+    async with SessionLocal() as session:
+        task = (await session.execute(
+            select(Task).where(Task.id == input_data["task_id"]))).scalar_one()
+        query = task.query
+    images = await search_image(query, count=6)
+    async with SessionLocal() as session:
+        for i, img in enumerate(images, start=1):
+            session.add(Asset(
+                task_id=input_data["task_id"], page_index=i,
+                subject=query, source_type="official", copyright_status="unknown",
+                hash=hashlib.md5(img["image_url"].encode()).hexdigest(),
+                image_url=img["image_url"], model_version=img.get("engine", "search"),
+                is_illustration=False))
+        await session.commit()
+    return {"searched_images": len(images)}
+
+
 async def node_evidence_build(input_data: dict) -> dict:
     from src.models.tasks import Task
     from src.models.entities import Claim, Evidence

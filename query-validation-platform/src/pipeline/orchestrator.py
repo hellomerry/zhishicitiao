@@ -1,10 +1,11 @@
 from src.pipeline.nodes import (
-    execute_node, NODES, node_evidence_build, node_draft_gen, node_rule_check,
-    node_page_split, node_asset_gen, node_ocr_read, node_cross_check,
+    execute_node, NODES, node_entity_bind, node_evidence_build, node_draft_gen,
+    node_rule_check, node_page_split, node_asset_gen, node_ocr_read, node_cross_check,
     node_risk_classify, node_review_queue, node_batch_signoff, node_publish_snapshot,
 )
 
 NODE_FN = {
+    "entity_bind": node_entity_bind,
     "evidence_build": node_evidence_build,
     "draft_gen": node_draft_gen,
     "rule_check": node_rule_check,

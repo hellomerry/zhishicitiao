@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     # 图片模型（z-image-turbo，阿里百炼，中文渲染优）
     dashscope_api_key: str = "sk-zzz"     # DashScope API key
     dashscope_base_url: str = "https://ws-7349xztoo3gwseol.cn-beijing.maas.aliyuncs.com/api/v1"
+    # 搜实景图 provider（openserp 免费默认 / doubao_ark / bing_api 预留）
+    image_search_provider: str = "openserp"
+    openserp_base_url: str = "http://127.0.0.1:7001"
     # 旧 ChatGPT 生图字段（保留占位）
     chatgpt_api_key: str = "sk-zzz"
     chatgpt_proxy_url: str = ""
