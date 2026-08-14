@@ -74,12 +74,18 @@ async def node_entity_bind(input_data: dict) -> dict:
 async def node_evidence_build(input_data: dict) -> dict:
     from src.models.tasks import Task
     from src.models.entities import Claim, Evidence
-    from src.gateway.web_search import web_search
+    from src.models.review import Issue
+    from src.gateway.web_search import web_search, deepseek_verify, detect_conflict
     async with SessionLocal() as session:
         task = (await session.execute(
             select(Task).where(Task.id == input_data["task_id"]))).scalar_one()
         query = task.query
+    # 1. 豆包检索（结构化来源）
     results = await web_search(query, count=6)
+    # 2. DeepSeek 联网验证（交叉校验）
+    deepseek_text = await deepseek_verify(query)
+    # 3. 争议检测：豆包来源 vs DeepSeek 结论的关键数字不一致
+    conflicts = detect_conflict([r["summary"] or "" for r in results], deepseek_text)
     async with SessionLocal() as session:
         claim = Claim(task_id=input_data["task_id"], claim_text=query,
                       risk_level="P1", position=1)
@@ -89,8 +95,13 @@ async def node_evidence_build(input_data: dict) -> dict:
             session.add(Evidence(claim_id=claim.id, source_url=r["url"] or "no-url",
                                  source_level="P2", excerpt=(r["summary"] or "")[:500],
                                  supports=True))
+        # 4. 争议预警：创建 P1 问题单（事实审核 A 域）
+        if conflicts:
+            session.add(Issue(task_id=input_data["task_id"], role="A", priority="P1",
+                              description="证据争议: " + "; ".join(conflicts)))
         await session.commit()
-    return {"evidence_built": True, "evidence_count": len(results)}
+    return {"evidence_built": True, "evidence_count": len(results),
+            "conflicts": conflicts}
 
 
 async def node_draft_gen(input_data: dict) -> dict:

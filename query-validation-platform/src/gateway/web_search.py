@@ -1,3 +1,4 @@
+import re
 import httpx
 import litellm
 from src.config import settings
@@ -14,6 +15,37 @@ async def web_search(query: str, count: int = 6) -> list:
     if provider == "deepseek":
         return await _search_deepseek(query)
     raise ValueError(f"unknown web search provider: {provider}")
+
+
+async def deepseek_verify(query: str) -> str:
+    """DeepSeek 联网搜索独立验证，返回总结文本（用于与豆包结构化来源交叉校验）。"""
+    r = await litellm.aresponses(
+        model="deepseek/deepseek-v4-pro", input=query,
+        tools=[{"type": "web_search"}], api_key=settings.deepseek_api_key)
+    return r.output_text if hasattr(r, "output_text") else str(r)
+
+
+def _extract_founded_year(text: str):
+    """提取创办/成立年份（针对学校/机构/产品类内容）。"""
+    m = re.search(r"(?:成立于|创办于|创建于|建校于|建立于|始建)\s*(\d{4})\s*年?", text)
+    return f"{m.group(1)}年" if m else None
+
+
+def detect_conflict(source_summaries: list, deepseek_text: str) -> list:
+    """比较豆包结构化来源 vs DeepSeek 结论的创办/成立年份，返回冲突列表。
+
+    规则：两边都给出了创办年份，但值不一致 → 争议（如豆包 1990 vs DeepSeek 1981）。
+    """
+    source_year = None
+    for s in source_summaries:
+        y = _extract_founded_year(s)
+        if y:
+            source_year = y
+            break
+    deepseek_year = _extract_founded_year(deepseek_text)
+    if source_year and deepseek_year and source_year != deepseek_year:
+        return [f"创办年份不一致: 豆包来源 {source_year} vs DeepSeek {deepseek_year}"]
+    return []
 
 
 async def _search_doubao(query: str, count: int) -> list:
@@ -39,8 +71,5 @@ async def _search_doubao(query: str, count: int) -> list:
 
 
 async def _search_deepseek(query: str) -> list:
-    r = await litellm.aresponses(
-        model="deepseek/deepseek-v4-pro", input=query,
-        tools=[{"type": "web_search"}], api_key=settings.deepseek_api_key)
-    text = r.output_text if hasattr(r, "output_text") else str(r)
+    text = await deepseek_verify(query)
     return [{"title": "deepseek-web-search", "url": "", "summary": text}]
