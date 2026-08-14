@@ -18,7 +18,8 @@ async def generate_image(prompt: str, size: str = IMAGE_SIZE_3_4) -> dict:
                "Authorization": f"Bearer {settings.dashscope_api_key}"}
     async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.post(url, json=payload, headers=headers)
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            raise RuntimeError(f"image gen failed ({resp.status_code}): {resp.text[:400]}")
         data = resp.json()
     choice = data["output"]["choices"][0]
     content = choice["message"]["content"]

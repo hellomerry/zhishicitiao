@@ -117,9 +117,13 @@ async def node_asset_gen(input_data: dict) -> dict:
     prompts = [p.body[:500] for p in page_list]
     while len(prompts) < 6:
         prompts.append("图文卡片")
-    # 6 张图并行生成（spec 2.6 峰值要求），避免串行成为吞吐瓶颈
+    # 6 张图生成，Semaphore(2) 限并发避免触发 z-image-turbo 限流（429）
+    sem = asyncio.Semaphore(2)
+    async def _gen(i, prompt):
+        async with sem:
+            return await _generate_single_asset(input_data["task_id"], i, prompt)
     results = await asyncio.gather(
-        *[_generate_single_asset(input_data["task_id"], i, prompts[i - 1]) for i in range(1, 7)])
+        *[_gen(i, prompts[i - 1]) for i in range(1, 7)])
     async with SessionLocal() as session:
         for r in results:
             session.add(Asset(**r))
