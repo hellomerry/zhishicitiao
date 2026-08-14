@@ -4,60 +4,37 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>产能看板 · 产能验证平台</title>
-<style>
-  :root { --bg:#f5f6f8; --card:#fff; --border:#e0e2e6; --text:#1a1d21; --muted:#6b7280; --green:#16a34a; --yellow:#d97706; --red:#dc2626; }
-  * { box-sizing:border-box; margin:0; padding:0; }
-  body { font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--text); padding:20px; }
-  header { display:flex; align-items:center; gap:12px; margin-bottom:20px; }
-  header h1 { font-size:20px; }
-  header .refresh { margin-left:auto; padding:8px 16px; border:none; border-radius:8px; background:var(--card); border:1px solid var(--border); cursor:pointer; }
-  .grid { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:16px; }
-  .metric { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px; }
-  .metric .label { font-size:12px; color:var(--muted); margin-bottom:6px; }
-  .metric .value { font-size:24px; font-weight:700; }
-  .row { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
-  .panel { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px; }
-  .panel h2 { font-size:14px; margin-bottom:12px; }
-  .bar-row { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
-  .bar-label { width:40px; font-size:12px; }
-  .bar { height:18px; border-radius:4px; }
-  .bar-green { background:var(--green); } .bar-yellow { background:var(--yellow); } .bar-red { background:var(--red); }
-  .error-item { padding:4px 0; font-size:13px; border-bottom:1px solid #f0f0f0; }
-  .q-depth { display:flex; gap:12px; }
-  .q-item { flex:1; text-align:center; padding:10px; border:1px solid var(--border); border-radius:8px; }
-  .q-item .n { font-size:20px; font-weight:700; }
-  .q-item .l { font-size:11px; color:var(--muted); }
-</style>
+<link rel="stylesheet" href="/static/common.css">
 </head>
 <body>
-<header>
-  <h1>产能看板</h1>
-  <span id="updated" style="color:var(--muted);font-size:12px;"></span>
-  <button class="refresh" onclick="load()">刷新</button>
-</header>
-<div class="grid" id="metrics"></div>
-<div class="row">
-  <div class="panel"><h2>审核队列积压</h2><div class="q-depth" id="queue"></div></div>
-  <div class="panel"><h2>失败类型 Top-5</h2><div id="errors"></div></div>
+<div id="nav"></div>
+<div class="container">
+  <div class="page-title">产能看板 <span class="muted" style="font-size:13px;font-weight:400;" id="updated"></span> <button class="btn btn-outline" style="margin-left:auto;" onclick="load()">刷新</button></div>
+  <div class="grid grid-4" id="metrics"></div>
+  <div style="height:16px"></div>
+  <div class="grid grid-2">
+    <div class="card"><h2>审核队列积压</h2><div class="grid grid-2" id="queue"></div></div>
+    <div class="card"><h2>失败类型 Top-5</h2><div id="errors"></div></div>
+  </div>
 </div>
+<script src="/static/common.js"></script>
 <script>
+requireLogin();
+renderNav('dashboard');
 async function load(){
   const r=await fetch('/api/dashboard/metrics');
   const d=await r.json();
-  const m=document.getElementById('metrics');
   const fmtPct=x=>`${(x*100).toFixed(1)}%`;
   const fmtSec=x=>x>60?`${(x/60).toFixed(1)}min`:`${x.toFixed(1)}s`;
-  m.innerHTML=`
-    <div class="metric"><div class="label">今日吞吐（条/时）</div><div class="value">${d.throughput_per_hour}</div></div>
-    <div class="metric"><div class="label">首过率（24h）</div><div class="value">${fmtPct(d.first_pass_rate_24h)}</div></div>
-    <div class="metric"><div class="label">人工触达率（24h）</div><div class="value">${fmtPct(d.human_touch_rate_24h)}</div></div>
-    <div class="metric"><div class="label">P95 节点耗时</div><div class="value">${fmtSec(d.p95_node_seconds)}</div></div>
-    <div class="metric"><div class="label">单任务成本（24h）</div><div class="value">¥${d.cost_per_task_24h_cny.toFixed(3)}</div></div>
+  document.getElementById('metrics').innerHTML=`
+    <div class="stat"><div class="n">${d.throughput_per_hour}</div><div class="l">今日吞吐（条/时）</div></div>
+    <div class="stat"><div class="n">${fmtPct(d.first_pass_rate_24h)}</div><div class="l">首过率（24h）</div></div>
+    <div class="stat"><div class="n">${fmtPct(d.human_touch_rate_24h)}</div><div class="l">人工触达率</div></div>
+    <div class="stat"><div class="n">${fmtSec(d.p95_node_seconds)}</div><div class="l">P95 节点耗时</div></div>
+    <div class="stat"><div class="n">¥${d.cost_per_task_24h_cny.toFixed(3)}</div><div class="l">单任务成本</div></div>
   `;
-  const q=document.getElementById('queue');
-  q.innerHTML=['A','B','C'].map(r=>`<div class="q-item"><div class="n">${d.queue_depth[r]||0}</div><div class="l">${r} 域</div></div>`).join('');
-  const e=document.getElementById('errors');
-  e.innerHTML=d.error_top_5.length?d.error_top_5.map(x=>`<div class="error-item">${x.error_class} × ${x.count}</div>`).join(''):'<div style="color:var(--muted)">无失败</div>';
+  document.getElementById('queue').innerHTML=['A','B','C'].map(r=>`<div class="stat"><div class="n">${d.queue_depth[r]||0}</div><div class="l">${r} 域积压</div></div>`).join('');
+  document.getElementById('errors').innerHTML=d.error_top_5.length?d.error_top_5.map(x=>`<div style="padding:5px 0;border-bottom:1px solid #f0f0f0;font-size:13px;">${x.error_class} × ${x.count}</div>`).join(''):'<div class="muted">无失败记录</div>';
   document.getElementById('updated').textContent='更新于 '+new Date().toLocaleTimeString();
 }
 load();

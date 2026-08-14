@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>登录 · 产能验证平台</title>
+<link rel="stylesheet" href="/static/common.css">
+<style>
+  body { display:flex; align-items:center; justify-content:center; min-height:100vh; }
+  .login-card { background:var(--card); border:1px solid var(--border); border-radius:16px; padding:40px; width:380px; }
+  .login-card h1 { font-size:20px; margin-bottom:6px; }
+  .login-card .sub { color:var(--muted); font-size:13px; margin-bottom:24px; }
+  .role-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:20px; }
+  .role-opt { border:2px solid var(--border); border-radius:10px; padding:14px 8px; text-align:center; cursor:pointer; }
+  .role-opt.sel { border-color:var(--primary); background:#eff5ff; }
+  .role-opt .r { font-size:18px; font-weight:700; }
+  .role-opt .d { font-size:11px; color:var(--muted); margin-top:4px; }
+</style>
+</head>
+<body>
+<div class="login-card">
+  <h1>产能验证平台</h1>
+  <div class="sub">选择你的审核角色并登录</div>
+  <label>审核角色</label>
+  <div class="role-grid" id="rolegrid">
+    <div class="role-opt" data-role="A"><div class="r">A</div><div class="d">文案事实</div></div>
+    <div class="role-opt" data-role="B"><div class="r">B</div><div class="d">图片版权</div></div>
+    <div class="role-opt" data-role="C"><div class="r">C</div><div class="d">合规交付</div></div>
+  </div>
+  <label>姓名</label>
+  <input id="name" placeholder="输入你的姓名（如：张三）">
+  <div style="height:16px"></div>
+  <button class="btn btn-primary" style="width:100%" onclick="login()">进入工作台</button>
+</div>
+<script src="/static/common.js"></script>
+<script>
+let role='A';
+document.getElementById('rolegrid').addEventListener('click',e=>{
+  const opt=e.target.closest('.role-opt'); if(!opt) return;
+  role=opt.dataset.role;
+  document.querySelectorAll('.role-opt').forEach(o=>o.classList.toggle('sel',o===opt));
+});
+document.querySelector('.role-opt[data-role="A"]').classList.add('sel');
+document.getElementById('name').addEventListener('keydown',e=>{ if(e.key==='Enter') login(); });
+function login(){
+  const name=document.getElementById('name').value.trim();
+  if(!name){ alert('请输入姓名'); return; }
+  setUser({name,role});
+  location.href='/workbench';
+}
+</script>
+</body>
+</html>

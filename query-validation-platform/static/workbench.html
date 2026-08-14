@@ -4,94 +4,78 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>审核工作台 · 产能验证平台</title>
+<link rel="stylesheet" href="/static/common.css">
 <style>
-  :root { --bg:#f5f6f8; --card:#fff; --border:#e0e2e6; --text:#1a1d21; --muted:#6b7280;
-          --green:#16a34a; --yellow:#d97706; --red:#dc2626; --blue:#2563eb; --gray:#9ca3af; }
-  * { box-sizing:border-box; margin:0; padding:0; }
-  body { font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--text); height:100vh; display:flex; flex-direction:column; }
-  header { background:var(--card); border-bottom:1px solid var(--border); padding:10px 16px; display:flex; align-items:center; gap:12px; }
-  header h1 { font-size:16px; font-weight:600; }
-  .role-select { padding:6px 10px; border:1px solid var(--border); border-radius:6px; }
-  .reviewer-input { padding:6px 10px; border:1px solid var(--border); border-radius:6px; width:180px; }
-  .timer { margin-left:auto; font-size:18px; font-weight:700; padding:6px 14px; border-radius:8px; background:#eee; }
-  .timer.running { background:#dcfce7; color:var(--green); }
-  .timer.suspended { background:#f3f4f6; color:var(--gray); }
-  .timer.timeout { background:#fee2e2; color:var(--red); }
-  .suspend-btn { padding:6px 12px; border:1px solid var(--border); border-radius:6px; background:var(--card); cursor:pointer; }
-  main { flex:1; display:grid; grid-template-columns:260px 1fr 200px; gap:0; overflow:hidden; }
-  .panel { overflow-y:auto; padding:12px; }
-  .queue { border-right:1px solid var(--border); background:var(--card); }
-  .queue h2, .review h2, .actions h2 { font-size:13px; color:var(--muted); margin-bottom:8px; }
-  .queue-item { padding:10px; border:1px solid var(--border); border-radius:8px; margin-bottom:8px; cursor:pointer; }
-  .queue-item.active { border-color:var(--blue); background:#eff6ff; }
-  .queue-item .tid { font-size:11px; color:var(--muted); }
-  .risk-badge { display:inline-block; padding:2px 8px; border-radius:4px; font-size:11px; color:#fff; }
-  .risk-green { background:var(--green); } .risk-yellow { background:var(--yellow); } .risk-red { background:var(--red); }
-  .review { background:var(--bg); }
-  .card { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:12px; margin-bottom:12px; }
-  .card h3 { font-size:13px; margin-bottom:6px; color:var(--muted); }
-  .card .body { font-size:14px; line-height:1.6; }
-  .fact-item { padding:6px 0; border-bottom:1px solid #f0f0f0; font-size:13px; }
-  .evi-item { font-size:12px; color:var(--muted); padding:4px 0; }
-  .evi-item a { color:var(--blue); }
+  .workbench { display:grid; grid-template-columns:280px 1fr 220px; gap:16px; height:calc(100vh - 54px); padding:16px; }
+  .panel { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); overflow-y:auto; display:flex; flex-direction:column; }
+  .panel-head { padding:14px 16px; border-bottom:1px solid var(--border); font-size:14px; font-weight:600; display:flex; align-items:center; gap:8px; }
+  .panel-body { flex:1; overflow-y:auto; padding:12px; }
+  .queue-item { padding:12px; border:1px solid var(--border); border-radius:8px; margin-bottom:8px; cursor:pointer; transition:all .15s; }
+  .queue-item:hover { border-color:var(--primary); }
+  .queue-item.active { border-color:var(--primary); background:#eff5ff; }
+  .queue-item .q { font-size:13px; margin-bottom:6px; line-height:1.4; }
+  .queue-item .meta { font-size:11px; color:var(--muted); }
+  .detail-card { border:1px solid var(--border); border-radius:8px; padding:14px; margin-bottom:12px; }
+  .detail-card h3 { font-size:13px; color:var(--muted); margin-bottom:8px; }
+  .detail-card .body { font-size:14px; line-height:1.7; white-space:pre-wrap; }
+  .fact-item { padding:8px 0; border-bottom:1px solid #f0f0f0; font-size:13px; }
+  .evi-item { font-size:12px; padding:6px 0; border-bottom:1px solid #f0f0f0; }
+  .evi-item a { color:var(--primary); word-break:break-all; }
   .imgs { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
   .imgs img { width:100%; border-radius:6px; border:1px solid var(--border); }
-  .actions { border-left:1px solid var(--border); background:var(--card); }
-  .btn { width:100%; padding:10px; border:none; border-radius:8px; font-size:14px; cursor:pointer; margin-bottom:10px; }
-  .btn-approve { background:var(--green); color:#fff; }
-  .btn-reject { background:var(--red); color:#fff; }
-  .reason-box { width:100%; padding:8px; border:1px solid var(--border); border-radius:6px; margin-bottom:10px; }
-  .empty { color:var(--muted); text-align:center; padding:40px 0; font-size:14px; }
+  .timer-box { padding:14px 16px; border-bottom:1px solid var(--border); text-align:center; }
+  .timer { font-size:26px; font-weight:700; padding:8px; border-radius:10px; }
+  .timer.running { background:#dcfce7; color:var(--green); }
+  .timer.suspended { background:#f3f4f6; color:var(--gray); }
+  .action-btns { padding:14px 16px; display:flex; flex-direction:column; gap:10px; }
+  @media (max-width:900px){ .workbench{grid-template-columns:1fr;} }
 </style>
 </head>
 <body>
-<header>
-  <h1>审核工作台</h1>
-  <select id="role" class="role-select">
-    <option value="A">A · 文案事实</option>
-    <option value="B">B · 图片版权</option>
-    <option value="C">C · 合规交付</option>
-  </select>
-  <input id="reviewer" class="reviewer-input" placeholder="审核员姓名（如：张三）">
-  <button id="suspend" class="suspend-btn">⏸ 挂起</button>
-  <div id="timer" class="timer">00:00</div>
-</header>
-<main>
-  <div class="panel queue">
-    <h2>待审队列（<span id="qcount">0</span>）</h2>
-    <div id="queue"></div>
+<div id="nav"></div>
+<div class="workbench">
+  <div class="panel">
+    <div class="panel-head">待审队列 <span class="tag tag-blue" id="qcount">0</span></div>
+    <div class="panel-body" id="queue"></div>
   </div>
-  <div class="panel review">
-    <div id="taskdetail"><div class="empty">点击左侧任务领取并查看详情</div></div>
+  <div class="panel">
+    <div class="panel-head">审核内容</div>
+    <div class="panel-body" id="taskdetail"><div class="empty"><div class="icon">📋</div>从左侧队列选择任务开始审核</div></div>
   </div>
-  <div class="panel actions">
-    <h2>操作</h2>
-    <button id="claim-btn" class="btn btn-approve">领取任务</button>
-    <button id="approve-btn" class="btn btn-approve" disabled>✓ 通过</button>
-    <textarea id="reason" class="reason-box" placeholder="驳回原因（驳回时必填）" rows="3"></textarea>
-    <button id="reject-btn" class="btn btn-reject" disabled>✗ 驳回</button>
+  <div class="panel">
+    <div class="timer-box"><div class="timer" id="timer">00:00</div></div>
+    <div class="action-btns">
+      <button class="btn btn-primary" id="claim-btn">🔒 领取任务</button>
+      <button class="btn btn-success" id="approve-btn" disabled>✓ 通过</button>
+      <textarea id="reason" placeholder="驳回原因（驳回时必填）" rows="3" style="font-size:13px;"></textarea>
+      <button class="btn btn-danger" id="reject-btn" disabled>✗ 驳回</button>
+      <button class="btn btn-outline" id="suspend">⏸ 挂起</button>
+    </div>
   </div>
-</main>
+</div>
+<script src="/static/common.js"></script>
 <script>
+const user = requireLogin();
+if (user) { renderNav('workbench'); document.title = `${roleName(user.role)} · 审核工作台`; }
+
 const API = '';
-let state = { role:'A', reviewer:'', currentTask:null, timerInterval:null, heartbeatInterval:null, startTs:null, suspended:false };
+let state = { currentTask:null, timerInterval:null, heartbeatInterval:null, startTs:null, suspended:false };
 
 function fmt(sec){ const m=String(Math.floor(sec/60)).padStart(2,'0'); const s=String(sec%60).padStart(2,'0'); return `${m}:${s}`; }
-function getRole(){ return document.getElementById('role').value; }
-function getReviewer(){ return document.getElementById('reviewer').value.trim(); }
+function esc(s){ return (s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 async function loadQueue(){
-  const role=getRole();
-  const r=await fetch(`${API}/api/review/queue/${role}`);
+  const r=await fetch(`${API}/api/review/queue/${user.role}`);
   const d=await r.json();
-  const q=document.getElementById('queue');
   document.getElementById('qcount').textContent=d.sessions.length;
-  if(!d.sessions.length){ q.innerHTML='<div class="empty">队列为空</div>'; return; }
-  q.innerHTML=d.sessions.map(s=>`<div class="queue-item" data-tid="${s.task_id}" onclick="selectTask('${s.task_id}')"><div class="tid">${s.task_id.slice(0,8)}</div></div>`).join('');
+  const q=document.getElementById('queue');
+  if(!d.sessions.length){ q.innerHTML='<div class="empty"><div class="icon">✅</div>队列已清空</div>'; return; }
+  q.innerHTML=d.sessions.map(s=>`<div class="queue-item" data-tid="${s.task_id}" onclick="selectTask('${s.task_id}')"><div class="q">${s.task_id.slice(0,8)}</div><div class="meta">点击查看详情</div></div>`).join('');
 }
 
 async function selectTask(tid){
   document.querySelectorAll('.queue-item').forEach(e=>e.classList.toggle('active',e.dataset.tid===tid));
+  state.currentTask=tid;
   const r=await fetch(`${API}/api/review/task/${tid}`);
   const d=await r.json();
   renderTask(d);
@@ -99,84 +83,61 @@ async function selectTask(tid){
 
 function renderTask(d){
   const el=document.getElementById('taskdetail');
-  const risk=d.risk?`<span class="risk-badge risk-${d.risk.level}">${d.risk.level}</span>`:'';
-  const draft=d.draft?`<div class="card"><h3>正文</h3><div class="body">${esc(d.draft.body)}</div></div>`:'';
-  const claims=d.claims&&d.claims.length?`<div class="card"><h3>事实点</h3>${d.claims.map(c=>`<div class="fact-item">[${c.risk_level}] ${esc(c.claim_text)}</div>`).join('')}</div>`:'';
-  const evis=d.evidences&&d.evidences.length?`<div class="card"><h3>证据（${d.evidences.length}）</h3>${d.evidences.map(e=>`<div class="evi-item"><a href="${e.source_url}" target="_blank">${e.source_url.slice(0,60)}</a><br>${esc(e.excerpt||'').slice(0,80)}</div>`).join('')}</div>`:'';
-  const imgs=d.assets&&d.assets.length?`<div class="card"><h3>图片（${d.assets.length}）</h3><div class="imgs">${d.assets.map(a=>a.image_url?`<img src="${a.image_url}" loading="lazy">`:`<div>第${a.page_index}页(${a.source_type})</div>`).join('')}</div></div>`:'';
-  const ocr=d.ocr&&d.ocr.length?`<div class="card"><h3>OCR</h3>${d.ocr.map(o=>`<div class="fact-item">${esc(o.raw_text)}</div>`).join('')}</div>`:'';
-  el.innerHTML=`<div class="card"><h3>任务</h3><div class="body">${risk} <b>${esc(d.task.query)}</b> <span class="tid">${d.task.content_type}</span></div></div>${draft}${claims}${evis}${imgs}${ocr}`;
+  if(d.error){ el.innerHTML=`<div class="empty">${d.error}</div>`; return; }
+  const risk=d.risk?`<span class="tag ${d.risk.level==='green'?'tag-green':d.risk.level==='yellow'?'tag-yellow':'tag-red'}">${d.risk.level}</span>`:'';
+  const draft=d.draft?`<div class="detail-card"><h3>正文</h3><div class="body">${esc(d.draft.body)}</div></div>`:'';
+  const claims=d.claims&&d.claims.length?`<div class="detail-card"><h3>事实点（${d.claims.length}）</h3>${d.claims.map(c=>`<div class="fact-item"><span class="tag ${c.risk_level==='P0'?'tag-red':c.risk_level==='P1'?'tag-yellow':'tag-gray'}">${c.risk_level}</span> ${esc(c.claim_text)}</div>`).join('')}</div>`:'';
+  const evis=d.evidences&&d.evidences.length?`<div class="detail-card"><h3>证据来源（${d.evidences.length}）</h3>${d.evidences.map(e=>`<div class="evi-item"><a href="${e.source_url}" target="_blank">${e.source_url.slice(0,70)}</a>${e.excerpt?`<div class="muted">${esc(e.excerpt).slice(0,90)}</div>`:''}</div>`).join('')}</div>`:'';
+  const imgs=d.assets&&d.assets.length?`<div class="detail-card"><h3>图片（${d.assets.length}）</h3><div class="imgs">${d.assets.map(a=>a.image_url?`<img src="${a.image_url}" loading="lazy">`:`<div class="fact-item">第${a.page_index}页 · ${a.source_type}</div>`).join('')}</div></div>`:'';
+  el.innerHTML=`<div class="detail-card"><h3>任务</h3><div class="body">${risk} <b>${esc(d.task.query)}</b> <span class="muted" style="font-size:12px;">${d.task.content_type}</span></div></div>${draft}${claims}${evis}${imgs}`;
 }
-function esc(s){ return (s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 async function claimTask(){
-  const reviewer=getReviewer();
-  if(!reviewer){ alert('请先填写审核员姓名'); return; }
   if(!state.currentTask){ alert('请先在左侧选择一个任务'); return; }
-  const role=getRole();
-  const r=await fetch(`${API}/api/review/claim`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({task_id:state.currentTask,role,reviewer_id:reviewer})});
+  const r=await fetch(`${API}/api/review/claim`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({task_id:state.currentTask,role:user.role,reviewer_id:user.name})});
   const d=await r.json();
-  if(d.acquired){
-    startTimer();
-    document.getElementById('approve-btn').disabled=false;
-    document.getElementById('reject-btn').disabled=false;
-  } else {
-    alert(`任务已被 ${d.locked_by} 锁定`);
-  }
+  if(d.acquired){ startTimer(); document.getElementById('approve-btn').disabled=false; document.getElementById('reject-btn').disabled=false; }
+  else { alert('任务已被其他审核员锁定'); }
 }
 
 function startTimer(){
   state.startTs=Date.now(); state.suspended=false;
-  document.getElementById('timer').classList.remove('suspended','timeout'); document.getElementById('timer').classList.add('running');
+  const t=document.getElementById('timer');
+  t.classList.remove('suspended'); t.classList.add('running');
   clearInterval(state.timerInterval);
-  state.timerInterval=setInterval(()=>{
-    if(!state.suspended){ const s=Math.floor((Date.now()-state.startTs)/1000); document.getElementById('timer').textContent=fmt(s); }
-  },1000);
-  // 心跳：每 10 秒
+  state.timerInterval=setInterval(()=>{ if(!state.suspended){ t.textContent=fmt(Math.floor((Date.now()-state.startTs)/1000)); } },1000);
   clearInterval(state.heartbeatInterval);
   state.heartbeatInterval=setInterval(async()=>{
-    const role=getRole();
-    await fetch(`${API}/api/review/heartbeat`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({task_id:state.currentTask,role,reviewer_id:getReviewer(),client_ts:new Date().toISOString()})});
+    await fetch(`${API}/api/review/heartbeat`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({task_id:state.currentTask,role:user.role,reviewer_id:user.name,client_ts:new Date().toISOString()})});
   },10000);
 }
 
 document.getElementById('suspend').onclick=()=>{
   state.suspended=!state.suspended;
-  document.getElementById('timer').classList.toggle('suspended',state.suspended);
-  document.getElementById('timer').classList.toggle('running',!state.suspended);
+  const t=document.getElementById('timer');
+  t.classList.toggle('suspended',state.suspended); t.classList.toggle('running',!state.suspended);
+  document.getElementById('suspend').textContent=state.suspended?'▶ 继续':'⏸ 挂起';
 };
 
 async function doAction(type){
   if(!state.currentTask) return;
-  const reviewer=getReviewer(); const role=getRole();
   const reason=document.getElementById('reason').value;
   if(type==='reject' && !reason){ alert('驳回必须填写原因'); return; }
-  const r=await fetch(`${API}/api/review/action`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({task_id:state.currentTask,role,reviewer_id:reviewer,action_type:type,reason})});
+  const r=await fetch(`${API}/api/review/action`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({task_id:state.currentTask,role:user.role,reviewer_id:user.name,action_type:type,reason})});
   const d=await r.json();
   if(d.ok){
     clearInterval(state.timerInterval); clearInterval(state.heartbeatInterval);
-    document.getElementById('timer').textContent='00:00';
-    document.getElementById('timer').classList.remove('running','suspended','timeout');
-    document.getElementById('approve-btn').disabled=true;
-    document.getElementById('reject-btn').disabled=true;
-    document.getElementById('reason').value='';
-    state.currentTask=null;
+    document.getElementById('timer').textContent='00:00'; document.getElementById('timer').classList.remove('running','suspended');
+    document.getElementById('approve-btn').disabled=true; document.getElementById('reject-btn').disabled=true;
+    document.getElementById('reason').value=''; state.currentTask=null;
     loadQueue();
-    document.getElementById('taskdetail').innerHTML='<div class="empty">已提交，点击左侧任务继续</div>';
+    document.getElementById('taskdetail').innerHTML='<div class="empty"><div class="icon">✅</div>已提交，选择下一条继续</div>';
   }
 }
 
 document.getElementById('claim-btn').onclick=claimTask;
 document.getElementById('approve-btn').onclick=()=>doAction('approve');
 document.getElementById('reject-btn').onclick=()=>doAction('reject');
-document.getElementById('role').onchange=()=>{ loadQueue(); state.currentTask=null; };
-document.getElementById('reviewer').onchange=()=>{ state.reviewer=getReviewer(); };
-
-// 队列里点击选中（不自动 claim，需点"领取任务"）
-let selectedTid=null;
-const origSelect=selectTask;
-window.selectTask=async function(tid){ selectedTid=tid; state.currentTask=tid; await origSelect(tid); };
-
 loadQueue();
 </script>
 </body>

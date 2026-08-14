@@ -22,7 +22,12 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 @app.get("/")
 async def index():
-    return RedirectResponse(url="/static/workbench.html")
+    return RedirectResponse(url="/login")
+
+
+@app.get("/login")
+async def login():
+    return RedirectResponse(url="/static/login.html")
 
 
 @app.get("/workbench")
