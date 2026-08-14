@@ -15,18 +15,20 @@ def detect_clock_drift(client_ts: datetime, server_ts: datetime) -> dict:
             "drift_seconds": drift_seconds}
 
 
-async def record_heartbeat(task_id: str, role: str, reviewer_id: str,
+async def record_heartbeat(task_id: str, role: str, reviewer_name: str,
                            client_ts: datetime = None):
+    from src.review.users import get_or_create_user
     server_ts = datetime.now(timezone.utc)
     drift = None
     if client_ts is not None:
         drift = detect_clock_drift(client_ts, server_ts)
     async with SessionLocal() as session:
+        reviewer_id = await get_or_create_user(session, reviewer_name, role)
         await session.execute(
             update(ReviewSession)
             .where(ReviewSession.task_id == uuid.UUID(task_id),
                    ReviewSession.role == role,
-                   ReviewSession.reviewer_id == uuid.UUID(reviewer_id),
+                   ReviewSession.reviewer_id == reviewer_id,
                    ReviewSession.finished_at.is_(None))
             .values(last_heartbeat_at=server_ts))
         await session.commit()

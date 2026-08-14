@@ -52,7 +52,7 @@
     <option value="B">B · 图片版权</option>
     <option value="C">C · 合规交付</option>
   </select>
-  <input id="reviewer" class="reviewer-input" placeholder="审核员 ID（任意标识）">
+  <input id="reviewer" class="reviewer-input" placeholder="审核员姓名（如：张三）">
   <button id="suspend" class="suspend-btn">⏸ 挂起</button>
   <div id="timer" class="timer">00:00</div>
 </header>
@@ -111,7 +111,7 @@ function esc(s){ return (s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','
 
 async function claimTask(){
   const reviewer=getReviewer();
-  if(!reviewer){ alert('请先填写审核员 ID'); return; }
+  if(!reviewer){ alert('请先填写审核员姓名'); return; }
   if(!state.currentTask){ alert('请先在左侧选择一个任务'); return; }
   const role=getRole();
   const r=await fetch(`${API}/api/review/claim`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({task_id:state.currentTask,role,reviewer_id:reviewer})});
