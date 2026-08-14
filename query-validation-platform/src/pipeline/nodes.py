@@ -48,6 +48,26 @@ async def _latest_draft_body(session, task_id):
     return draft.body if draft else ""
 
 
+async def node_evidence_build(input_data: dict) -> dict:
+    from src.models.tasks import Task
+    from src.models.entities import Claim, Evidence
+    from src.gateway.web_search import web_search
+    async with SessionLocal() as session:
+        task = (await session.execute(
+            select(Task).where(Task.id == input_data["task_id"]))).scalar_one()
+        query = task.query
+    summary = await web_search(query)
+    async with SessionLocal() as session:
+        claim = Claim(task_id=input_data["task_id"], claim_text=query,
+                      risk_level="P1", position=1)
+        session.add(claim)
+        await session.flush()
+        session.add(Evidence(claim_id=claim.id, source_url="deepseek-web-search",
+                             source_level="P2", excerpt=summary[:500], supports=True))
+        await session.commit()
+    return {"evidence_built": True, "summary": summary[:80]}
+
+
 async def node_draft_gen(input_data: dict) -> dict:
     from src.models.tasks import Task
     from src.models.drafts import Draft
@@ -114,9 +134,9 @@ async def node_asset_gen(input_data: dict) -> dict:
         pages = await session.execute(
             select(PageCopy).where(PageCopy.task_id == input_data["task_id"]))
         page_list = pages.scalars().all()
-    prompts = [p.body[:500] for p in page_list]
+    prompts = [f"竖版3:4图文卡片，简洁高级风格，中文黑体文字清晰可读，画面呈现：{p.body[:200]}" for p in page_list]
     while len(prompts) < 6:
-        prompts.append("图文卡片")
+        prompts.append("竖版3:4图文卡片，简洁高级风格，中文黑体文字清晰可读")
     # 6 张图生成，Semaphore(2) 限并发避免触发 z-image-turbo 限流（429）
     sem = asyncio.Semaphore(2)
     async def _gen(i, prompt):

@@ -3,7 +3,7 @@ from src.config import settings
 from src.gateway.litellm_adapter import call_provider
 
 # 文本模型选型（spec §1.1）：DeepSeek 主 + Kimi Code 备
-DEEPSEEK_MODEL = "deepseek/deepseek-chat"
+DEEPSEEK_MODEL = "deepseek/deepseek-v4-pro"   # deepseek-chat 已弃用（2026-07-24）
 KIMI_MODEL = "anthropic/k3"          # Kimi Code 走 Anthropic 兼容协议
 KIMI_API_BASE = "https://api.kimi.com/coding"
 
