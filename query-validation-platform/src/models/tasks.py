@@ -13,6 +13,7 @@ class Task(Base):
     idempotency_key = Column(Text, unique=True, nullable=False)
     query = Column(Text, nullable=False)
     content_type = Column(Text, nullable=False)
+    mode = Column(Text, nullable=False, default="general")
     platform = Column(Text)
     sla_hours = Column(Integer, nullable=False, default=24)
     priority = Column(Text, nullable=False, default="normal")
