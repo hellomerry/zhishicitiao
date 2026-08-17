@@ -2,7 +2,6 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from src.db.session import SessionLocal
 from src.gateway.failover import call_with_failover, DEEPSEEK_MODEL, KIMI_MODEL
-from src.gateway.prompt_versions import get_prompt
 from src.quality.rules import check_rules
 
 NODES = [
@@ -138,19 +137,22 @@ async def node_evidence_build(input_data: dict) -> dict:
 async def node_draft_gen(input_data: dict) -> dict:
     from src.models.tasks import Task
     from src.models.drafts import Draft
+    from src.gateway.prompt_versions import get_draft_prompt
     async with SessionLocal() as session:
         task = (await session.execute(
             select(Task).where(Task.id == input_data["task_id"]))).scalar_one()
         query = task.query
-    prompt = get_prompt("draft", "v1") + "\n\n" + query
+        mode = task.mode or "general"
+    prompt = get_draft_prompt(mode) + "\n\n" + query
+    prompt_version = f"draft_{mode}_v1"
     result = await call_with_failover(prompt, DEEPSEEK_MODEL, KIMI_MODEL)
     async with SessionLocal() as session:
         session.add(Draft(
             task_id=input_data["task_id"], version=1, body=result["text"],
-            model_version=result["model_version"], prompt_version="draft_v1"))
+            model_version=result["model_version"], prompt_version=prompt_version))
         await session.commit()
     return {"text": result["text"], "model_version": result["model_version"],
-            "prompt_version": "draft_v1", "cost_cny": result["cost_cny"],
+            "prompt_version": prompt_version, "cost_cny": result["cost_cny"],
             "degraded": result["degraded"]}
 
 
