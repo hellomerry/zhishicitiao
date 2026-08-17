@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     openai_image_base_url: str = ""      # 转发机地址（占位，联调填）
     openai_image_api_key: str = "sk-xxx" # OpenAI 图生 key
     image_model: str = "gpt-image-1.5"
-    image_size: str = "1024x1536"        # 3:4 竖版
+    image_size: str = "1024x1536"        # 竖版（1024x1536，2:3）
     # 搜实景图 provider（openserp 免费默认 / doubao_ark / bing_api 预留）
     image_search_provider: str = "openserp"
     openserp_base_url: str = "http://127.0.0.1:7001"

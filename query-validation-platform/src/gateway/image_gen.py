@@ -33,13 +33,17 @@ async def generate_image(prompt: str, size: str = None,
 async def _generate(prompt: str, size: str) -> dict:
     """文生图：POST /v1/images/generations"""
     url = f"{settings.openai_image_base_url}/v1/images/generations"
-    payload = {"model": IMAGE_MODEL, "prompt": prompt, "size": size, "n": 1}
+    payload = {"model": IMAGE_MODEL, "prompt": prompt, "size": size, "n": 1,
+               "response_format": "url"}
     async with httpx.AsyncClient(timeout=300) as client:
         resp = await client.post(url, json=payload, headers=_headers())
         if resp.status_code >= 400:
             raise RuntimeError(f"image gen failed ({resp.status_code}): {resp.text[:400]}")
         data = resp.json()
-    return _result(data["data"][0]["url"])
+    u = data["data"][0].get("url")
+    if not u:
+        raise RuntimeError(f"image response missing url field: {str(data)[:200]}")
+    return _result(u)
 
 
 async def _edit_with_references(prompt: str, reference_image_urls: list[str],
@@ -51,13 +55,16 @@ async def _edit_with_references(prompt: str, reference_image_urls: list[str],
         content = await _download_image_bytes(ref_url)
         files.append(("image[]", (f"ref_{i}.png", content, "image/png")))
     data = {"model": IMAGE_MODEL, "prompt": prompt, "size": size,
-            "input_fidelity": "high", "n": "1"}
+            "input_fidelity": "high", "n": "1", "response_format": "url"}
     async with httpx.AsyncClient(timeout=300) as client:
         resp = await client.post(url, data=data, files=files, headers=_headers())
         if resp.status_code >= 400:
             raise RuntimeError(f"image edit failed ({resp.status_code}): {resp.text[:400]}")
         j = resp.json()
-    return _result(j["data"][0]["url"])
+    u = j["data"][0].get("url")
+    if not u:
+        raise RuntimeError(f"image response missing url field: {str(j)[:200]}")
+    return _result(u)
 
 
 def _result(image_url: str) -> dict:
