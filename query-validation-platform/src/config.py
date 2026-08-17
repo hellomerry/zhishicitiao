@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     web_search_provider: str = "doubao"   # doubao（结构化来源）/ deepseek（联网总结）
     doubao_search_key: str = "sk-www"     # 豆包搜索 API：证据包
     doubao_ark_key: str = "sk-vvv"        # 豆包方舟：搜实景图（预留）
+    # 队列 / 自适应并发（有的大模型有并发限制，按限流信号动态调整）
+    initial_concurrency: int = 2
+    min_concurrency: int = 1
+    max_concurrency: int = 8
+    # 工作周期：工作 N 小时 → 检修停机 M 小时 → 循环
+    work_hours: float = 23.0
+    maintenance_hours: float = 1.0
     # 系统配置
     environment: str = "dev"
     log_level: str = "INFO"

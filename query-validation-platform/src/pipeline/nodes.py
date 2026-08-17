@@ -15,12 +15,15 @@ NODES = [
 
 async def execute_node(task_id, node_name: str, input_data: dict, node_fn=None):
     from src.pipeline.idempotency import check_or_record_node_event
+    from src.stream.bus import bus
+    tid = str(task_id)
     async with SessionLocal() as session:
         event = await check_or_record_node_event(
             session, task_id, node_name, input_data)
         if event is None:
             return {"skipped": True}
         event.started_at = datetime.now(timezone.utc)
+        await bus.publish("node_started", {"node": node_name}, task_id=tid)
         try:
             if node_fn:
                 output = await node_fn(input_data)
@@ -31,13 +34,41 @@ async def execute_node(task_id, node_name: str, input_data: dict, node_fn=None):
             event.model_version = output.get("model_version")
             event.prompt_version = output.get("prompt_version")
             await session.commit()
+            await bus.publish("node_finished", _node_summary(node_name, output), task_id=tid)
             return output
         except Exception as e:
             event.finished_at = datetime.now(timezone.utc)
             event.error_class = type(e).__name__
             event.retry_count = (event.retry_count or 0) + 1
             await session.commit()
+            await bus.publish("node_failed", {"node": node_name, "error": str(e)}, task_id=tid)
             raise
+
+
+def _node_summary(node_name: str, output: dict) -> dict:
+    """抽取节点输出的可读摘要 + 实际内容片段，供流式前端展示。"""
+    s: dict = {"node": node_name}
+    if node_name == "draft_gen":
+        text = output.get("text", "")
+        s["preview"] = text[:220]
+        s["length"] = len(text)
+        s["model"] = output.get("model_version")
+    elif node_name == "asset_gen":
+        s["count"] = output.get("asset_count", 0)
+        s["image_urls"] = output.get("image_urls", [])
+    elif node_name == "evidence_build":
+        s["evidence_count"] = output.get("evidence_count", 0)
+        s["conflicts"] = output.get("conflicts", [])
+    elif node_name == "risk_classify":
+        s["level"] = output.get("level")
+        s["reasons"] = output.get("reasons", [])
+    elif node_name == "entity_bind":
+        s["searched_images"] = output.get("searched_images", 0)
+    else:
+        for k, v in output.items():
+            if isinstance(v, (str, int, float, bool)) or v is None:
+                s[k] = v
+    return s
 
 
 async def _latest_draft_body(session, task_id):
@@ -184,7 +215,8 @@ async def node_asset_gen(input_data: dict) -> dict:
         for r in results:
             session.add(Asset(**r))
         await session.commit()
-    return {"asset_count": len(results)}
+    return {"asset_count": len(results),
+            "image_urls": [r.get("image_url") for r in results if r.get("image_url")]}
 
 
 async def node_ocr_read(input_data: dict) -> dict:

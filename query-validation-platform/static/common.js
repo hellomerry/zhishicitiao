@@ -19,8 +19,11 @@ function renderLayout(active, title) {
   const menu = [
     ['workbench', '/workbench', '📋', '审核工作台'],
     ['import', '/import', '📥', '导入 Query'],
+    ['stream', '/stream', '🖥️', '流式监控'],
     ['progress', '/progress', '📊', '进度查看'],
+    ['sample', '/sample', '🎲', '随机抽查'],
     ['dashboard', '/dashboard', '📈', '产能看板'],
+    ['admin', '/admin', '⚙️', '后台管理'],
   ];
   document.getElementById('layout').innerHTML = `
     <aside class="sidebar">

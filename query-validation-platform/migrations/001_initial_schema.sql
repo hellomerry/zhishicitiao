@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS users (
     role TEXT NOT NULL CHECK (role IN ('A','B','C','admin')),
     capabilities JSONB NOT NULL DEFAULT '[]',
     active BOOLEAN NOT NULL DEFAULT TRUE,
+    password_hash TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -98,6 +99,7 @@ CREATE TABLE IF NOT EXISTS assets (
     copyright_status TEXT NOT NULL CHECK (copyright_status IN ('clear','unknown','restricted')),
     license_scope TEXT,
     hash TEXT NOT NULL,
+    image_url TEXT,
     model_version TEXT,
     is_illustration BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

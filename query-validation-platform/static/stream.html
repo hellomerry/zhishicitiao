@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>流式监控 · 产能验证平台</title>
+<link rel="stylesheet" href="/static/common.css">
+<style>
+  html, body { background: #000; }
+  #matrix { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 0; display: block; }
+  .content { position: relative; z-index: 1; background: transparent; }
+  .topbar { background: rgba(15,20,15,.92); border-bottom: 1px solid #0f3; }
+  .topbar .page-title { color: #00ff41; font-family: "Courier New", monospace; }
+
+  .stream-stats { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-bottom: 16px; }
+  .stat { background: rgba(0,20,0,.55); border: 1px solid rgba(0,255,65,.35); color: #00ff41; backdrop-filter: blur(3px); }
+  .stat .n { color: #00ff41; font-family: "Courier New", monospace; }
+  .stat .l { color: rgba(0,255,65,.6); }
+
+  .stream-feed { display: flex; flex-direction: column; gap: 10px; max-height: calc(100vh - 260px); overflow-y: auto; }
+  .task-card { background: rgba(0,20,0,.55); border: 1px solid rgba(0,255,65,.3); border-radius: 8px; padding: 12px 14px; color: #b8ffc8; backdrop-filter: blur(3px); font-family: "Courier New", "PingFang SC", monospace; }
+  .task-card .q { color: #00ff41; font-weight: 700; font-size: 14px; word-break: break-all; }
+  .task-card .meta { font-size: 11px; color: rgba(0,255,65,.55); margin-top: 4px; }
+  .steps { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; }
+  .step { width: 20px; height: 20px; border-radius: 4px; font-size: 10px; line-height: 20px; text-align: center; cursor: default; border: 1px solid rgba(0,255,65,.25); color: rgba(0,255,65,.4); background: rgba(0,255,65,.06); }
+  .step.done { background: rgba(0,255,65,.8); color: #000; border-color: #00ff41; }
+  .step.cur { background: #00ff41; color: #000; border-color: #fff; animation: pulse 1s infinite; }
+  .step.err { background: #ff5555; color: #000; border-color: #ff5555; }
+  @keyframes pulse { 0%,100%{ box-shadow: 0 0 4px #00ff41; } 50%{ box-shadow: 0 0 14px #00ff41; } }
+  .task-card .cur-node { font-size: 12px; margin-top: 8px; color: #7dff9a; }
+  .task-card .preview { font-size: 12px; color: #d2ffe0; margin-top: 8px; background: rgba(0,0,0,.35); padding: 8px; border-radius: 6px; max-height: 120px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+  .task-card .imgs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .task-card .imgs img { width: 60px; height: 80px; object-fit: cover; border-radius: 4px; border: 1px solid rgba(0,255,65,.4); }
+  .task-card .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-left: 6px; }
+  .st-queued { color: #9ca3af; border-color: rgba(156,163,175,.4) !important; }
+  .st-processing { box-shadow: 0 0 12px rgba(0,255,65,.25); }
+  .st-done { color: #00ff41; border-color: #00ff41 !important; }
+  .st-failed { color: #ff5555; border-color: #ff5555 !important; }
+
+  .event-log { margin-top: 16px; background: rgba(0,20,0,.5); border: 1px solid rgba(0,255,65,.3); border-radius: 8px; padding: 10px 14px; max-height: 180px; overflow-y: auto; font-family: "Courier New", monospace; font-size: 12px; }
+  .event-log .ev { color: #7dff9a; padding: 2px 0; }
+  .event-log .ev.rl { color: #ff9f1a; }
+  .event-log .ev.cc { color: #4db8ff; }
+  .log-bar { display: flex; justify-content: flex-end; margin-bottom: 8px; }
+  .log-bar a { color: #00ff41; text-decoration: none; border: 1px solid rgba(0,255,65,.4); padding: 6px 12px; border-radius: 6px; font-size: 13px; font-family: "Courier New", monospace; }
+  .log-bar a:hover { background: rgba(0,255,65,.15); }
+</style>
+</head>
+<body>
+<canvas id="matrix"></canvas>
+<div id="layout"></div>
+<div class="content">
+  <div class="stream-stats" id="stats"></div>
+  <div class="log-bar"><a href="/api/admin/logs/download">⬇ 下载运行日志</a></div>
+  <div class="stream-feed" id="feed"></div>
+  <div class="event-log" id="log"><div class="ev">> 等待任务事件…</div></div>
+</div>
+<script src="/static/common.js"></script>
+<script>
+requireLogin();
+renderLayout('stream', '流式监控 · 实时生产监控');
+
+const NODE_ORDER=['task_import','entity_bind','evidence_build','draft_gen','rule_check','page_split','asset_gen','ocr_read','cross_check','risk_classify','review_queue','batch_signoff','publish_snapshot'];
+const NODE_LABEL={task_import:'导入',entity_bind:'搜图',evidence_build:'证据',draft_gen:'正文',rule_check:'质检',page_split:'分页',asset_gen:'配图',ocr_read:'OCR',cross_check:'一致性',risk_classify:'风险',review_queue:'审核',batch_signoff:'会签',publish_snapshot:'快照'};
+const NODE_FULL={task_import:'任务导入',entity_bind:'搜实景图',evidence_build:'证据+交叉验证',draft_gen:'正文生成',rule_check:'规则质检',page_split:'分页文案',asset_gen:'配图生成',ocr_read:'OCR回读',cross_check:'图文一致性',risk_classify:'风险分流',review_queue:'审核队列',batch_signoff:'批次会签',publish_snapshot:'发布快照'};
+
+// ===== Matrix 雨 =====
+const canvas=document.getElementById('matrix'), ctx=canvas.getContext('2d');
+let W,H,cols,drops;
+function resize(){ W=canvas.width=window.innerWidth; H=canvas.height=window.innerHeight; cols=Math.floor(W/16); drops=Array.from({length:cols},()=>Math.random()*-50); }
+resize(); window.addEventListener('resize',resize);
+const CHARS='アイウエオカキクケコサシスセソ0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+function draw(){
+  ctx.fillStyle='rgba(0,0,0,0.08)'; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#00ff41'; ctx.font='16px monospace';
+  for(let i=0;i<cols;i++){
+    ctx.fillText(CHARS[Math.floor(Math.random()*CHARS.length)], i*16, drops[i]*16);
+    if(drops[i]*16>H && Math.random()>0.975) drops[i]=0;
+    drops[i]++;
+  }
+}
+setInterval(draw,50);
+
+// ===== 状态 =====
+const state={counts:{queued:0,processing:0,done:0,failed:0},capacity:0,rateLimits:0,tasks:{}};
+
+function renderStats(){
+  const c=state.counts;
+  const items=[['queued','排队中'],['processing','处理中'],['done','已完成'],['failed','失败'],['capacity','当前并发'],['rl','限流次数']];
+  document.getElementById('stats').innerHTML=items.map(([k,l])=>{
+    let v = k==='capacity' ? state.capacity : (k==='rl' ? state.rateLimits : (c[k]||0));
+    return `<div class="stat"><div class="n">${v}</div><div class="l">${l}</div></div>`;
+  }).join('');
+}
+
+function log(msg, cls){
+  const el=document.getElementById('log');
+  const d=document.createElement('div'); d.className='ev '+(cls||''); d.textContent='['+new Date().toLocaleTimeString()+'] '+msg;
+  el.prepend(d);
+  while(el.children.length>60) el.removeChild(el.lastChild);
+}
+function esc(s){ return String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+function statusLabel(s){ return {queued:'排队',processing:'生产中',done:'完成',failed:'失败'}[s]||s; }
+
+function stepsHtml(t){
+  return NODE_ORDER.map(n=>{
+    let cls='step';
+    if(t.nodes && t.nodes.includes(n)) cls+=' done';
+    else if(t.current_node===n && t.status==='processing') cls+=' cur';
+    else if(t.status==='failed' && t.error && n===t.current_node) cls+=' err';
+    return `<div class="${cls}" title="${NODE_FULL[n]}">${NODE_LABEL[n]}</div>`;
+  }).join('');
+}
+
+function cardHtml(t){
+  const cls = t.status==='processing'?'st-processing':(t.status==='done'?'st-done':(t.status==='failed'?'st-failed':'st-queued'));
+  const done = t.nodes?t.nodes.length:0;
+  const pct = Math.round(done/NODE_ORDER.length*100);
+  return `<div class="task-card ${cls}" id="t-${t.id}">
+    <div class="q">${esc(t.query)} <span class="badge">${statusLabel(t.status)}</span></div>
+    <div class="meta">步骤 ${done}/${NODE_ORDER.length}（${pct}%）${t.model?' · '+esc(t.model):''}</div>
+    <div class="steps">${stepsHtml(t)}</div>
+    <div class="cur-node">▸ ${t.status==='processing' && t.current_node ? (NODE_FULL[t.current_node]||t.current_node) : (t.status==='failed'?'失败：'+esc(t.error||''):(t.status==='done'?'已完成':'等待调度'))}</div>
+    <div class="preview">${esc(t.preview||'')}</div>
+    <div class="imgs">${(t.imgs||[]).map(u=>`<img src="${u}" loading="lazy" onerror="this.style.display='none'">`).join('')}</div>
+  </div>`;
+}
+
+function renderAll(){
+  const feed=document.getElementById('feed');
+  const tasks=Object.values(state.tasks);
+  if(!tasks.length){ feed.innerHTML='<div class="event-log"><div class="ev">暂无任务，请到「导入 Query」导入后查看实时进度</div></div>'; return; }
+  feed.innerHTML=tasks.map(cardHtml).join('');
+}
+function upsertTask(tid, patch){
+  if(!state.tasks[tid]) state.tasks[tid]={id:tid,query:'',status:'queued',nodes:[],current_node:'',preview:'',imgs:[],model:'',error:''};
+  Object.assign(state.tasks[tid], patch);
+  const el=document.getElementById('t-'+tid);
+  if(el) el.outerHTML=cardHtml(state.tasks[tid]);
+}
+
+// ===== SSE =====
+const es=new EventSource('/api/stream/events');
+es.onmessage=(e)=>{
+  let msg; try{ msg=JSON.parse(e.data); }catch(_){ return; }
+  const type=msg.type, d=msg.data||{};
+  if(type==='snapshot'){
+    state.counts=d.counts||state.counts;
+    state.capacity=d.limiter?.capacity||0;
+    state.tasks={};
+    (d.tasks||[]).forEach(t=>{ state.tasks[t.id]=t; });
+    renderStats(); renderAll(); return;
+  }
+  if(type==='ping') return;
+  if(type==='rate_limit'){ state.rateLimits++; state.capacity=d.capacity; renderStats(); log('⚠ 检测到限流，并发降至 '+d.capacity,'rl'); return; }
+  if(type==='concurrency'){ state.capacity=d.capacity; renderStats(); log('⇒ 并发调整 '+d.previous+' → '+d.capacity,'cc'); return; }
+
+  const tid=d.task_id;
+  if(!tid) return;
+  if(type==='task_enqueued'){ state.tasks[tid]={id:tid,query:d.query,status:'queued',nodes:[],current_node:'',preview:'',imgs:[],model:'',error:''}; log('⇢ 入队：'+d.query); renderAll(); }
+  else if(type==='task_started'){ upsertTask(tid,{status:'processing'}); log('▶ 开始：'+(state.tasks[tid]?.query||'')); }
+  else if(type==='task_finished'){ upsertTask(tid,{status:'done'}); log('✔ 完成：'+(state.tasks[tid]?.query||'')); }
+  else if(type==='task_failed'){ upsertTask(tid,{status:'failed',error:d.error||''}); log('✘ 失败：'+(state.tasks[tid]?.query||'')+(d.throttled?'（限流）':''), d.throttled?'rl':''); }
+  else if(type==='node_started'){ upsertTask(tid,{current_node:d.node}); }
+  else if(type==='node_finished'){
+    const t=state.tasks[tid]; if(!t) return;
+    if(!t.nodes) t.nodes=[];
+    if(d.node && !t.nodes.includes(d.node)) t.nodes.push(d.node);
+    const patch={current_node:d.node};
+    if(d.node==='draft_gen' && d.preview){ patch.preview=d.preview+(d.length>220?'\n…(共'+d.length+'字)':''); patch.model=d.model; }
+    else if(d.node==='asset_gen' && d.image_urls && d.image_urls.length){ patch.imgs=d.image_urls; }
+    else if(d.node==='risk_classify' && d.level){ patch.preview='风险：'+d.level+(d.reasons&&d.reasons.length?' · '+d.reasons.join('；'):''); }
+    else if(d.node==='evidence_build'){ patch.preview='证据 '+d.evidence_count+' 条'+(d.conflicts&&d.conflicts.length?' · ⚠ 争议':'· 无争议'); }
+    upsertTask(tid, patch);
+    log('▪ '+(NODE_FULL[d.node]||d.node)+' 完成');
+  }
+  renderStats();
+};
+</script>
+</body>
+</html>

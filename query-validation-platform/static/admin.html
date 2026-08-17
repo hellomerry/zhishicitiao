@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>后台管理 · 产能验证平台</title>
+<link rel="stylesheet" href="/static/common.css">
+<style>
+  .admin-body { max-width: 900px; }
+  .cycle-card { display: flex; align-items: center; gap: 24px; padding: 20px; }
+  .cycle-mode { font-size: 22px; font-weight: 700; }
+  .mode-working { color: var(--green); }
+  .mode-maintenance { color: var(--red); }
+  .cycle-timer { font-family: "Courier New", monospace; font-size: 28px; font-weight: 700; }
+  .cycle-sub { font-size: 12px; color: var(--muted); }
+  .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .action-btn { padding: 16px; border-radius: 10px; border: 1px solid var(--border); cursor: pointer; text-align: left; font-size: 14px; font-weight: 600; transition: all .15s; background: var(--card); }
+  .action-btn:hover { border-color: var(--primary); }
+  .action-btn .desc { display: block; font-size: 12px; color: var(--muted); font-weight: 400; margin-top: 4px; }
+  .action-btn.danger:hover { border-color: var(--red); background: #fff5f5; }
+  .action-btn:disabled { opacity: .4; cursor: not-allowed; }
+  .status-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+</style>
+</head>
+<body>
+<div id="layout"></div>
+<div class="content admin-body">
+  <div class="card">
+    <h2>工作周期</h2>
+    <div class="cycle-card" id="cycle"></div>
+  </div>
+
+  <div class="card">
+    <h2>任务概览</h2>
+    <div class="status-grid" id="taskStats"></div>
+  </div>
+
+  <div class="card">
+    <h2>运维操作</h2>
+    <div class="actions">
+      <button class="action-btn" id="btnMaintain" onclick="doMaintain()">
+        🔧 手动检修（停机）
+        <span class="desc">立即暂停取新任务，进入检修停机状态</span>
+      </button>
+      <button class="action-btn" id="btnRestart" onclick="doRestart()">
+        ▶️ 结束检修并重新开启
+        <span class="desc">恢复调度，开启新一轮工作周期</span>
+      </button>
+      <a class="action-btn" href="/api/admin/export" style="text-decoration:none;color:var(--text);">
+        📥 导出工作记录
+        <span class="desc">下载 CSV（任务/正文/图/证据/成本/风险）</span>
+      </a>
+      <button class="action-btn danger" onclick="doClear()">
+        🗑️ 删除工作内容
+        <span class="desc">清空全部任务与产出（保留账号），不可恢复</span>
+      </button>
+    </div>
+  </div>
+</div>
+<script src="/static/common.js"></script>
+<script>
+requireLogin();
+renderLayout('admin', '后台管理');
+
+function fmt(s){
+  s = Math.max(0, s||0);
+  const h=Math.floor(s/3600), m=Math.floor((s%3600)/60), sec=Math.floor(s%60);
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+}
+
+async function load(){
+  try{
+    const r=await fetch('/api/admin/status');
+    const d=await r.json();
+    const c=d.cycle||{};
+    const working = c.mode==='working';
+    const modeText = working?'工作中':'检修停机';
+    const modeCls = working?'mode-working':'mode-maintenance';
+    const nextText = working?'距自动检修':'距自动恢复工作';
+    document.getElementById('cycle').innerHTML=`
+      <div class="cycle-mode ${modeCls}">${modeText}</div>
+      <div style="flex:1;">
+        <div class="cycle-timer">${fmt(c.remaining_seconds)}</div>
+        <div class="cycle-sub">${nextText} · 已运行 ${fmt(c.elapsed_seconds)} · 周期 ${c.work_hours}h 工作 / ${c.maintenance_hours}h 检修</div>
+      </div>`;
+    document.getElementById('btnMaintain').disabled = !working;
+    document.getElementById('btnRestart').disabled = working;
+
+    const t=d.tasks||{};
+    const by=t.by_status||{};
+    const items=[['draft','草稿'],['processing','生产中'],['review','待审核'],['failed','失败']];
+    document.getElementById('taskStats').innerHTML=items.map(([k,l])=>`<div class="stat"><div class="n">${by[k]||0}</div><div class="l">${l}</div></div>`).join('')+`<div class="stat"><div class="n">${t.total||0}</div><div class="l">总计</div></div>`;
+  }catch(e){}
+}
+
+async function doMaintain(){
+  if(!confirm('确认立即进入检修停机？调度器将暂停取新任务。')) return;
+  const r=await fetch('/api/admin/maintenance/start',{method:'POST'});
+  await r.json(); load();
+}
+async function doRestart(){
+  if(!confirm('确认结束检修并重新开启工作？')) return;
+  const r=await fetch('/api/admin/restart',{method:'POST'});
+  await r.json(); load();
+}
+async function doClear(){
+  if(!confirm('⚠️ 确认删除全部工作内容？此操作不可恢复！')) return;
+  if(!confirm('再次确认：将清空所有任务与产出记录（保留登录账号）。')) return;
+  const r=await fetch('/api/admin/clear',{method:'POST'});
+  const d=await r.json();
+  alert(d.ok?'已删除全部工作内容':'删除失败');
+  load();
+}
+
+load();
+setInterval(load, 3000);
+</script>
+</body>
+</html>

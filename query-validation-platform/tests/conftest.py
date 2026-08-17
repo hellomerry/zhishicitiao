@@ -1,6 +1,76 @@
-import pytest
+import asyncio
+import os
+from pathlib import Path
 from unittest.mock import patch
 
+import asyncpg
+import pytest
+
+# ============ 测试库隔离 ============
+# 必须在导入 app 之前设置，让 settings / SessionLocal 指向独立测试库，
+# 避免集成测试向开发/生产库（qvp）写入测试数据。
+TEST_DB = "qvp_test"
+TEST_DB_URL = f"postgresql+asyncpg://qvp:qvp@localhost:5432/{TEST_DB}"
+os.environ["DATABASE_URL"] = TEST_DB_URL
+
+_ADMIN_DSN = "postgresql://qvp:qvp@localhost:5432/postgres"
+_TEST_DSN = f"postgresql://qvp:qvp@localhost:5432/{TEST_DB}"
+
+_ALL_TABLES = [
+    "organizations", "users", "tasks", "entity_snapshots", "claims", "evidence",
+    "drafts", "page_copies", "assets", "ocr_results", "rule_results",
+    "cross_checks", "risk_classifications", "review_sessions", "review_actions",
+    "issues", "batches", "batch_members", "approvals", "publish_snapshots",
+    "node_events",
+]
+
+_MIGRATION = Path(__file__).resolve().parent.parent / "migrations" / "001_initial_schema.sql"
+
+
+def _run(coro):
+    return asyncio.run(coro)
+
+
+async def _ensure_test_db():
+    admin = await asyncpg.connect(_ADMIN_DSN)
+    try:
+        exists = await admin.fetchval(
+            "SELECT 1 FROM pg_database WHERE datname = $1", TEST_DB)
+        if not exists:
+            await admin.execute(f'CREATE DATABASE "{TEST_DB}" OWNER qvp')
+    finally:
+        await admin.close()
+
+    conn = await asyncpg.connect(_TEST_DSN)
+    try:
+        await conn.execute(_MIGRATION.read_text())
+    finally:
+        await conn.close()
+
+
+async def _truncate_all():
+    conn = await asyncpg.connect(_TEST_DSN)
+    try:
+        await conn.execute(f"TRUNCATE TABLE {', '.join(_ALL_TABLES)} CASCADE")
+    finally:
+        await conn.close()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def setup_test_db():
+    """会话级：创建测试库并建表（幂等）。"""
+    _run(_ensure_test_db())
+    yield
+
+
+@pytest.fixture(autouse=True)
+def clean_db(setup_test_db):
+    """每个测试前清空测试库，保证用例互不干扰。"""
+    _run(_truncate_all())
+    yield
+
+
+# ============ 外部调用 mock ============
 FAKE_IMAGE = {"hash": "abc123", "image_url": "https://example.com/i.png", "model_version": "z-image-turbo"}
 FAKE_SEARCH = [{"title": "来源", "url": "https://example.com/src", "summary": "成立于1990年"}]
 FAKE_VERIFY = "成立于1990年"
