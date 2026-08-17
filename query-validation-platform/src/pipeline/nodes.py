@@ -189,9 +189,10 @@ async def node_page_split(input_data: dict) -> dict:
     return {"page_count": min(len(pages), 6)}
 
 
-async def _generate_single_asset(task_id, page_index: int, prompt: str) -> dict:
+async def _generate_single_asset(task_id, page_index: int, prompt: str,
+                                 reference_image_urls=None) -> dict:
     from src.gateway.image_gen import generate_image
-    r = await generate_image(prompt)
+    r = await generate_image(prompt, reference_image_urls=reference_image_urls)
     return {"task_id": task_id, "page_index": page_index, "hash": r["hash"],
             "image_url": r["image_url"],
             "source_type": "ai_generated", "copyright_status": "clear",
@@ -200,20 +201,32 @@ async def _generate_single_asset(task_id, page_index: int, prompt: str) -> dict:
 
 async def node_asset_gen(input_data: dict) -> dict:
     import asyncio
+    from src.models.tasks import Task
     from src.models.assets import Asset
     from src.models.drafts import PageCopy
+    from src.gateway.prompt_versions import get_image_prompt
     async with SessionLocal() as session:
+        task = (await session.execute(
+            select(Task).where(Task.id == input_data["task_id"]))).scalar_one()
+        mode = task.mode or "general"
         pages = await session.execute(
             select(PageCopy).where(PageCopy.task_id == input_data["task_id"]))
         page_list = pages.scalars().all()
-    prompts = [f"竖版3:4图文卡片，简洁高级风格，中文黑体文字清晰可读，画面呈现：{p.body[:200]}" for p in page_list]
+        reference_urls = None
+        if mode in ("compare", "single"):
+            refs = await session.execute(
+                select(Asset).where(Asset.task_id == input_data["task_id"],
+                                    Asset.source_type == "official",
+                                    Asset.is_illustration == False))
+            reference_urls = [a.image_url for a in refs.scalars() if a.image_url]
+    prompts = [get_image_prompt(mode, (p.body or "")[:200]) for p in page_list]
     while len(prompts) < 6:
-        prompts.append("竖版3:4图文卡片，简洁高级风格，中文黑体文字清晰可读")
-    # 6 张图生成，Semaphore(2) 限并发避免触发 z-image-turbo 限流（429）
+        prompts.append(get_image_prompt(mode, ""))
     sem = asyncio.Semaphore(2)
     async def _gen(i, prompt):
         async with sem:
-            return await _generate_single_asset(input_data["task_id"], i, prompt)
+            return await _generate_single_asset(input_data["task_id"], i, prompt,
+                                                reference_urls)
     results = await asyncio.gather(
         *[_gen(i, prompts[i - 1]) for i in range(1, 7)])
     async with SessionLocal() as session:
