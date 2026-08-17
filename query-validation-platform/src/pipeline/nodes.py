@@ -79,7 +79,7 @@ async def _latest_draft_body(session, task_id):
 
 
 async def node_entity_bind(input_data: dict) -> dict:
-    """搜实景图/实物图，存为 official 素材（供生图参考/人工审核）。"""
+    """搜实景图/实物图，存为 official 素材（compare/single 作参考图；general 跳过）。"""
     import hashlib
     from src.models.tasks import Task
     from src.models.assets import Asset
@@ -88,6 +88,9 @@ async def node_entity_bind(input_data: dict) -> dict:
         task = (await session.execute(
             select(Task).where(Task.id == input_data["task_id"]))).scalar_one()
         query = task.query
+        mode = task.mode or "general"
+    if mode == "general":
+        return {"searched_images": 0}
     images = await search_image(query, count=6)
     async with SessionLocal() as session:
         for i, img in enumerate(images, start=1):
