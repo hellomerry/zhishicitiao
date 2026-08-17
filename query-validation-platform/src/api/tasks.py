@@ -22,7 +22,8 @@ async def import_tasks(file: UploadFile = File(...)):
     async with SessionLocal() as session:
         for row in reader:
             try:
-                key = f"{row['query']}|{row['content_type']}|{row.get('platform', '')}"
+                mode = (row.get("mode") or "general").strip()
+                key = f"{row['query']}|{row['content_type']}|{row.get('platform', '')}|{mode}"
                 existing = await session.execute(
                     select(Task).where(Task.idempotency_key == key))
                 if existing.first():
@@ -32,6 +33,7 @@ async def import_tasks(file: UploadFile = File(...)):
                     query=row["query"],
                     content_type=row["content_type"],
                     platform=row.get("platform"),
+                    mode=mode,
                     status="draft",
                 )
                 session.add(task)
@@ -49,6 +51,7 @@ async def import_tasks(file: UploadFile = File(...)):
 class ImportQueriesIn(BaseModel):
     queries: list[str]        # 每行一个 Query
     content_type: str = "generic"   # 内容类型：generic / school / product / compare
+    mode: str = "general"     # 生产模式：compare / single / general
 
 
 @router.post("/api/tasks/import_queries")
@@ -60,13 +63,14 @@ async def import_queries(payload: ImportQueriesIn):
             q = q.strip()
             if not q:
                 continue
-            key = f"{q}|{payload.content_type}|"
+            key = f"{q}|{payload.content_type}|{payload.mode}"
             existing = await session.execute(
                 select(Task).where(Task.idempotency_key == key))
             if existing.first():
                 continue
             task = Task(idempotency_key=key, query=q,
-                        content_type=payload.content_type, status="draft")
+                        content_type=payload.content_type, mode=payload.mode,
+                        status="draft")
             session.add(task)
             await session.flush()
             imported.append((task.id, q))

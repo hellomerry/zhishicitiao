@@ -11,12 +11,11 @@
 <div class="content" style="max-width:760px;">
   <div class="card">
     <h2>批量导入查询词</h2>
-    <label>内容类型</label>
-    <select id="ctype">
-      <option value="generic">通用</option>
-      <option value="school">学校/机构</option>
-      <option value="product">产品评测</option>
-      <option value="compare">对比</option>
+    <label>生产模式</label>
+    <select id="mode">
+      <option value="general">通用（直接 AI 生图）</option>
+      <option value="single">单品（实景图 → 生图）</option>
+      <option value="compare">对比（实景图 → 生图）</option>
     </select>
     <div style="height:14px"></div>
     <label>Query 列表（每行一个）</label>
@@ -33,9 +32,9 @@ requireLogin();
 renderLayout('import', '导入 Query');
 async function submit(){
   const queries=document.getElementById('queries').value.split('\n').map(s=>s.trim()).filter(Boolean);
-  const content_type=document.getElementById('ctype').value;
+  const mode=document.getElementById('mode').value;
   if(!queries.length){ alert('请至少输入一个 Query'); return; }
-  const r=await fetch('/api/tasks/import_queries',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({queries,content_type})});
+  const r=await fetch('/api/tasks/import_queries',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({queries,mode})});
   const d=await r.json();
   document.getElementById('result').innerHTML=`<div class="card" style="background:#dcfce7;margin-top:14px;margin-bottom:0;">✅ 已导入 <b>${d.imported}</b> 个任务，系统正在后台生成内容。<a href="/progress">查看进度 →</a></div>`;
   document.getElementById('queries').value='';
