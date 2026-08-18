@@ -1,3 +1,4 @@
+import traceback
 from datetime import datetime, timezone
 from sqlalchemy import select
 from src.db.session import SessionLocal
@@ -21,7 +22,8 @@ async def execute_node(task_id, node_name: str, input_data: dict, node_fn=None):
             session, task_id, node_name, input_data)
         if event is None:
             return {"skipped": True}
-        event.started_at = datetime.now(timezone.utc)
+        start = datetime.now(timezone.utc)
+        event.started_at = start
         await bus.publish("node_started", {"node": node_name}, task_id=tid)
         try:
             if node_fn:
@@ -33,14 +35,21 @@ async def execute_node(task_id, node_name: str, input_data: dict, node_fn=None):
             event.model_version = output.get("model_version")
             event.prompt_version = output.get("prompt_version")
             await session.commit()
-            await bus.publish("node_finished", _node_summary(node_name, output), task_id=tid)
+            summary = _node_summary(node_name, output)
+            summary["elapsed"] = round((event.finished_at - start).total_seconds(), 2)
+            await bus.publish("node_finished", summary, task_id=tid)
             return output
         except Exception as e:
             event.finished_at = datetime.now(timezone.utc)
             event.error_class = type(e).__name__
             event.retry_count = (event.retry_count or 0) + 1
             await session.commit()
-            await bus.publish("node_failed", {"node": node_name, "error": str(e)}, task_id=tid)
+            await bus.publish("node_failed", {
+                "node": node_name,
+                "error": str(e),
+                "traceback": traceback.format_exc(),
+                "elapsed": round((event.finished_at - start).total_seconds(), 2),
+            }, task_id=tid)
             raise
 
 

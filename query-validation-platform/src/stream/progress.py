@@ -15,6 +15,20 @@ NODE_LABEL = {
 NODE_ORDER = list(NODE_LABEL.keys())
 
 
+def _done_msg(node: str, data: dict) -> str:
+    if node == "draft_gen":
+        return f"模型 {data.get('model', '')} · {data.get('length', 0)}字"
+    if node == "asset_gen":
+        return f"{data.get('count', 0)}张图"
+    if node == "evidence_build":
+        return f"证据 {data.get('evidence_count', 0)}条" + (" · ⚠争议" if data.get("conflicts") else "")
+    if node == "risk_classify":
+        return f"风险 {data.get('level', '')}"
+    if node == "entity_bind":
+        return f"搜图 {data.get('searched_images', 0)}张"
+    return "完成"
+
+
 class ProgressTracker:
     def __init__(self):
         self.tasks: dict[str, dict] = {}
@@ -55,7 +69,7 @@ class ProgressTracker:
             self.tasks[tid] = {
                 "id": tid, "query": data.get("query", ""), "status": "queued",
                 "nodes": [], "current_node": "", "preview": "", "imgs": [],
-                "model": "", "error": "",
+                "model": "", "error": "", "debug": [],
             }
             self.counts["queued"] += 1
         elif etype == "task_started" and t:
@@ -78,6 +92,12 @@ class ProgressTracker:
             if node and node not in t["nodes"]:
                 t["nodes"].append(node)
             t["current_node"] = node
+            t.setdefault("debug", []).append({
+                "ts": datetime.now().strftime("%H:%M:%S"),
+                "node": node, "label": NODE_LABEL.get(node, node),
+                "phase": "done", "elapsed": data.get("elapsed"),
+                "msg": _done_msg(node, data),
+            })
             if node == "draft_gen" and data.get("preview"):
                 t["preview"] = data["preview"]
                 t["model"] = data.get("model", "")
@@ -89,6 +109,16 @@ class ProgressTracker:
             elif node == "evidence_build":
                 t["preview"] = "证据 " + str(data.get("evidence_count", 0)) + " 条"
                 t["conflicts"] = data.get("conflicts", [])
+        elif etype == "node_failed" and t:
+            node = data.get("node", "")
+            t["current_node"] = node
+            t.setdefault("debug", []).append({
+                "ts": datetime.now().strftime("%H:%M:%S"),
+                "node": node, "label": NODE_LABEL.get(node, node),
+                "phase": "error", "elapsed": data.get("elapsed"),
+                "msg": data.get("error", ""),
+                "trace": data.get("traceback", ""),
+            })
 
     def _append_log(self, etype: str, tid, data: dict) -> None:
         ts = datetime.now().strftime("%H:%M:%S")
@@ -105,6 +135,9 @@ class ProgressTracker:
             line = f"[{ts}] 失败    {short}  {data.get('error', '')[:100]}"
         elif etype == "node_started":
             line = f"[{ts}] 进入步骤 {short}  {label}"
+        elif etype == "node_failed":
+            el = f"（{data.get('elapsed', 0)}s）" if data.get("elapsed") else ""
+            line = f"[{ts}] ✘ 步骤失败 {short}  {label}{el}  {data.get('error', '')[:120]}"
         elif etype == "node_finished":
             extra = ""
             if node == "draft_gen":

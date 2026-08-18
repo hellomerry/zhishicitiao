@@ -113,6 +113,29 @@ function stepsHtml(t){
   }).join('');
 }
 
+function doneMsg(node,d){
+  if(node==='draft_gen') return '模型 '+(d.model||'')+' · '+(d.length||0)+'字';
+  if(node==='asset_gen') return (d.count||0)+'张图';
+  if(node==='evidence_build') return '证据 '+(d.evidence_count||0)+'条'+(d.conflicts&&d.conflicts.length?' · ⚠争议':'');
+  if(node==='risk_classify') return '风险 '+(d.level||'');
+  if(node==='entity_bind') return '搜图 '+(d.searched_images||0)+'张';
+  return '完成';
+}
+function debugHtml(t){
+  if(!t.debug || !t.debug.length) return '';
+  const items=t.debug.map(d=>{
+    const ph = d.phase==='error' ? '✘' : '✓';
+    const col = d.phase==='error' ? '#ff9f1a' : '#7dff9a';
+    const el = (d.elapsed!=null && d.elapsed!==undefined) ? ' ('+d.elapsed+'s)' : '';
+    let tr = '';
+    if(d.phase==='error' && d.trace){
+      tr = '<pre style="margin:4px 0 0;font-size:10px;color:#ff7b7b;white-space:pre-wrap;word-break:break-all;max-height:200px;overflow:auto;">'+esc(d.trace)+'</pre>';
+    }
+    return '<div style="color:'+col+';font-size:11px;padding:2px 0;">'+ph+' '+esc(d.label||d.node)+el+' '+esc(d.msg||'')+tr+'</div>';
+  }).join('');
+  return '<div style="margin-top:8px;background:rgba(0,0,0,.45);border:1px solid rgba(0,255,65,.15);padding:8px;border-radius:6px;max-height:260px;overflow-y:auto;font-family:\'Courier New\',monospace;">'+items+'</div>';
+}
+
 function cardHtml(t){
   const cls = t.status==='processing'?'st-processing':(t.status==='done'?'st-done':(t.status==='failed'?'st-failed':'st-queued'));
   const done = t.nodes?t.nodes.length:0;
@@ -124,6 +147,7 @@ function cardHtml(t){
     <div class="cur-node">▸ ${t.status==='processing' && t.current_node ? (NODE_FULL[t.current_node]||t.current_node) : (t.status==='failed'?'失败：'+esc(t.error||''):(t.status==='done'?'已完成':'等待调度'))}</div>
     <div class="preview">${esc(t.preview||'')}</div>
     <div class="imgs">${(t.imgs||[]).map(u=>`<img src="${u}" loading="lazy" onerror="this.style.display='none'">`).join('')}</div>
+    ${debugHtml(t)}
   </div>`;
 }
 
@@ -134,7 +158,7 @@ function renderAll(){
   feed.innerHTML=tasks.map(cardHtml).join('');
 }
 function upsertTask(tid, patch){
-  if(!state.tasks[tid]) state.tasks[tid]={id:tid,query:'',status:'queued',nodes:[],current_node:'',preview:'',imgs:[],model:'',error:''};
+  if(!state.tasks[tid]) state.tasks[tid]={id:tid,query:'',status:'queued',nodes:[],current_node:'',preview:'',imgs:[],model:'',error:'',debug:[]};
   Object.assign(state.tasks[tid], patch);
   const el=document.getElementById('t-'+tid);
   if(el) el.outerHTML=cardHtml(state.tasks[tid]);
@@ -158,7 +182,7 @@ es.onmessage=(e)=>{
 
   const tid=d.task_id;
   if(!tid) return;
-  if(type==='task_enqueued'){ state.tasks[tid]={id:tid,query:d.query,status:'queued',nodes:[],current_node:'',preview:'',imgs:[],model:'',error:''}; log('⇢ 入队：'+d.query); renderAll(); }
+  if(type==='task_enqueued'){ state.tasks[tid]={id:tid,query:d.query,status:'queued',nodes:[],current_node:'',preview:'',imgs:[],model:'',error:'',debug:[]}; log('⇢ 入队：'+d.query); renderAll(); }
   else if(type==='task_started'){ upsertTask(tid,{status:'processing'}); log('▶ 开始：'+(state.tasks[tid]?.query||'')); }
   else if(type==='task_finished'){ upsertTask(tid,{status:'done'}); log('✔ 完成：'+(state.tasks[tid]?.query||'')); }
   else if(type==='task_failed'){ upsertTask(tid,{status:'failed',error:d.error||''}); log('✘ 失败：'+(state.tasks[tid]?.query||'')+(d.throttled?'（限流）':''), d.throttled?'rl':''); }
@@ -167,6 +191,8 @@ es.onmessage=(e)=>{
     const t=state.tasks[tid]; if(!t) return;
     if(!t.nodes) t.nodes=[];
     if(d.node && !t.nodes.includes(d.node)) t.nodes.push(d.node);
+    if(!t.debug) t.debug=[];
+    t.debug.push({ts:new Date().toLocaleTimeString(),node:d.node,label:NODE_FULL[d.node]||d.node,phase:'done',elapsed:d.elapsed,msg:doneMsg(d.node,d)});
     const patch={current_node:d.node};
     if(d.node==='draft_gen' && d.preview){ patch.preview=d.preview+(d.length>220?'\n…(共'+d.length+'字)':''); patch.model=d.model; }
     else if(d.node==='asset_gen' && d.image_urls && d.image_urls.length){ patch.imgs=d.image_urls; }
@@ -174,6 +200,13 @@ es.onmessage=(e)=>{
     else if(d.node==='evidence_build'){ patch.preview='证据 '+d.evidence_count+' 条'+(d.conflicts&&d.conflicts.length?' · ⚠ 争议':'· 无争议'); }
     upsertTask(tid, patch);
     log('▪ '+(NODE_FULL[d.node]||d.node)+' 完成');
+  }
+  else if(type==='node_failed'){
+    const t=state.tasks[tid]; if(!t) return;
+    if(!t.debug) t.debug=[];
+    t.debug.push({ts:new Date().toLocaleTimeString(),node:d.node,label:NODE_FULL[d.node]||d.node,phase:'error',elapsed:d.elapsed,msg:d.error||'',trace:d.traceback||''});
+    upsertTask(tid,{current_node:d.node});
+    log('✘ '+(NODE_FULL[d.node]||d.node)+' 失败：'+(d.error||'').slice(0,80));
   }
   renderStats();
 };
