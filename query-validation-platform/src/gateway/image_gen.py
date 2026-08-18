@@ -19,7 +19,7 @@ async def _download_image_bytes(url: str) -> bytes:
 
 async def generate_image(prompt: str, size: str = None,
                          reference_image_urls: list[str] | None = None) -> dict:
-    """调用 gpt-image-1.5 生成一张图；reference_image_urls 非空则图生图。"""
+    """调用 gpt-image-2 生成一张图；reference_image_urls 非空则图生图。"""
     size = size or IMAGE_SIZE
     if reference_image_urls:
         try:
@@ -54,8 +54,9 @@ async def _edit_with_references(prompt: str, reference_image_urls: list[str],
     for i, ref_url in enumerate(reference_image_urls):
         content = await _download_image_bytes(ref_url)
         files.append(("image[]", (f"ref_{i}.png", content, "image/png")))
+    # gpt-image-2 编辑时自动高保真，传 input_fidelity 会返回 400，故不传
     data = {"model": IMAGE_MODEL, "prompt": prompt, "size": size,
-            "input_fidelity": "high", "n": "1", "response_format": "url"}
+            "n": "1", "response_format": "url"}
     async with httpx.AsyncClient(timeout=300) as client:
         resp = await client.post(url, data=data, files=files, headers=_headers())
         if resp.status_code >= 400:

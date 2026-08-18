@@ -12,11 +12,11 @@ class Settings(BaseSettings):
     # 图片模型（z-image-turbo，阿里百炼，中文渲染优）
     dashscope_api_key: str = "sk-zzz"     # DashScope API key
     dashscope_base_url: str = "https://ws-7349xztoo3gwseol.cn-beijing.maas.aliyuncs.com/api/v1"
-    # 图片生成（gpt-image-1.5，OpenAI 兼容 Images API，经转发机）
+    # 图片生成（gpt-image-2，OpenAI 兼容 Images API，经转发机）
     openai_image_base_url: str = ""      # 转发机地址（占位，联调填）
     openai_image_api_key: str = "sk-xxx" # OpenAI 图生 key
-    image_model: str = "gpt-image-1.5"
-    image_size: str = "1024x1536"        # 竖版（1024x1536，2:3）
+    image_model: str = "gpt-image-2"
+    image_size: str = "1152x1536"        # 竖版（1152x1536，3:4）
     # 搜实景图 provider（openserp 免费默认 / doubao_ark / bing_api 预留）
     image_search_provider: str = "openserp"
     openserp_base_url: str = "http://127.0.0.1:7001"
