@@ -32,3 +32,14 @@ async def test_ref_download_failure_falls_back_to_generate():
          patch.object(image_gen, "_generate", new=AsyncMock(return_value={"image_url": "u", "hash": "h", "model_version": "gpt-image-1.5"})) as gen:
         await _generate_image("prompt", reference_image_urls=["https://x/a.png"])
     gen.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_mock_image_gen_returns_placeholder(monkeypatch):
+    monkeypatch.setattr(image_gen.settings, "mock_image_gen", True)
+    with patch.object(image_gen, "_generate", new=AsyncMock()) as gen:
+        r = await _generate_image("测试 prompt")
+    assert r["model_version"] == "mock"
+    assert r["image_url"].startswith("data:image/svg+xml")
+    assert r["hash"]
+    gen.assert_not_called()

@@ -1,6 +1,7 @@
 import traceback
 from datetime import datetime, timezone
 from sqlalchemy import select
+from src.config import settings
 from src.db.session import SessionLocal
 from src.gateway.failover import call_with_failover, DEEPSEEK_MODEL, KIMI_MODEL
 from src.quality.rules import check_rules
@@ -231,13 +232,12 @@ async def node_asset_gen(input_data: dict) -> dict:
     prompts = [get_image_prompt(mode, (p.body or "")[:200]) for p in page_list]
     while len(prompts) < 6:
         prompts.append(get_image_prompt(mode, ""))
-    sem = asyncio.Semaphore(2)
-    async def _gen(i, prompt):
-        async with sem:
-            return await _generate_single_asset(input_data["task_id"], i, prompt,
-                                                reference_urls)
-    results = await asyncio.gather(
-        *[_gen(i, prompts[i - 1]) for i in range(1, 7)])
+    # 串行 + 间隔生成：避免测试账户限流，保证每张图有足够处理时间
+    results = []
+    for i in range(1, 7):
+        results.append(await _generate_single_asset(
+            input_data["task_id"], i, prompts[i - 1], reference_urls))
+        await asyncio.sleep(settings.image_gen_delay_seconds)
     async with SessionLocal() as session:
         for r in results:
             session.add(Asset(**r))

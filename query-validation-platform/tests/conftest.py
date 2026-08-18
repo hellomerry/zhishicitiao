@@ -12,6 +12,8 @@ import pytest
 TEST_DB = "qvp_test"
 TEST_DB_URL = f"postgresql+asyncpg://qvp:qvp@localhost:5432/{TEST_DB}"
 os.environ["DATABASE_URL"] = TEST_DB_URL
+os.environ["IMAGE_GEN_DELAY_SECONDS"] = "0"  # 测试不 sleep，加速
+os.environ["MOCK_IMAGE_GEN"] = "false"       # 测试默认关 mock，路由逻辑走真函数
 
 _ADMIN_DSN = "postgresql://qvp:qvp@localhost:5432/postgres"
 _TEST_DSN = f"postgresql://qvp:qvp@localhost:5432/{TEST_DB}"
