@@ -84,3 +84,20 @@ class Approval(Base):
     approver_id = Column(UUID(as_uuid=True))
     conclusion = Column(Text, nullable=False)
     signed_at = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+
+class RejectMark(Base):
+    """定点驳回标记：审核员指出具体哪页文案/哪张图有问题（迁移 006）。
+
+    重试时只重生成 status='open' 的标记项，其余内容保留；重生成完成后置 resolved。
+    """
+    __tablename__ = "reject_marks"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_id = Column(UUID(as_uuid=True), nullable=False)
+    role = Column(Text)
+    item_type = Column(Text, nullable=False)      # page=分页文案 / image=交付配图
+    page_index = Column(Integer, nullable=False)  # 1-6
+    reason = Column(Text, nullable=False, default="")
+    status = Column(Text, nullable=False, default="open")  # open / resolved
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    resolved_at = Column(TIMESTAMP(timezone=True))

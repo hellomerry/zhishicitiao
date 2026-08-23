@@ -50,7 +50,7 @@ from src.db.session import SessionLocal
 
 async def main():
     async with SessionLocal() as s:
-        pw = hashlib.sha256('12345678'.encode()).hexdigest()
+        pw = hashlib.sha256('1qaz@WSX'.encode()).hexdigest()
         for n, r in [('张三','A'),('李四','B'),('王五','C')]:
             r0 = await s.execute(text('SELECT id FROM users WHERE name=:n'), {'n':n})
             if r0.first():
@@ -60,7 +60,7 @@ async def main():
         await s.commit()
 asyncio.run(main())
 " 2>/dev/null
-echo "账号就绪（张三/李四/王五，密码 12345678）"
+echo "账号就绪（张三/李四/王五，密码 1qaz@WSX）"
 
 # 6. 启动 OpenSERP（搜图，可选）
 echo "--- 6. 检查 OpenSERP ---"
@@ -80,7 +80,7 @@ echo "=============================================="
 echo "  服务启动中..."
 echo "  本机访问:   http://localhost:8000"
 echo "  局域网访问: http://$IP:8000"
-echo "  登录账号:   张三 / 李四 / 王五（密码 12345678）"
+echo "  登录账号:   张三 / 李四 / 王五（密码 1qaz@WSX）"
 echo "=============================================="
 echo ""
 uv run uvicorn src.api.main:app --host 0.0.0.0 --port 8000

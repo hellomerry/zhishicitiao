@@ -1,1 +1,0 @@
-docs/superpowers/plans/README.md

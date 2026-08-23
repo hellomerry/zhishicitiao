@@ -16,6 +16,7 @@ class Asset(Base):
     license_scope = Column(Text)
     hash = Column(Text, nullable=False)
     image_url = Column(Text)
+    origin_url = Column(Text)  # 上游原始地址（本地持久化前的来源，用于版权追溯）
     model_version = Column(Text)
     is_illustration = Column(Boolean, nullable=False, default=False)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))

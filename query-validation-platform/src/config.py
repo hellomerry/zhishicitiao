@@ -34,6 +34,13 @@ class Settings(BaseSettings):
     max_concurrency: int = 1
     # 配图间隔（秒）：每张图之间留足处理时间，避免触发限流
     image_gen_delay_seconds: float = 5.0
+    image_cost_per_image_cny: float = 0.2   # 每张生图成本（元，客户确认 2026-08-19）
+    # OCR（阿里百炼 qwen 系列，模型可按需换 qwen3.5-ocr / qwen3-vl-flash 等）
+    ocr_model: str = "qwen-vl-ocr"
+    ocr_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    # 按次计费的外部服务（价格不确定，可手工补充，单位：元/次）
+    doubao_search_cost_per_call: float = 0.0   # 豆包搜索（证据包）
+    openserp_cost_per_call: float = 0.0        # OpenSERP 搜实景图
     # 工作周期：工作 N 小时 → 检修停机 M 小时 → 循环
     work_hours: float = 23.0
     maintenance_hours: float = 1.0

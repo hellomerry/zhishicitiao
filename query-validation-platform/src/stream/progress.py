@@ -10,9 +10,16 @@ NODE_LABEL = {
     "asset_gen": "配图生成", "ocr_read": "OCR回读", "cross_check": "图文一致性",
     "risk_classify": "风险分流", "review_queue": "审核队列", "batch_signoff": "批次会签",
     "publish_snapshot": "发布快照",
+    # 定点重生成节点（仅用于成本/日志展示，不进流水线步骤条）
+    "page_regen": "单页重写", "asset_regen": "定点重生图",
 }
 
-NODE_ORDER = list(NODE_LABEL.keys())
+# 流水线步骤条顺序（13 节点；重生成节点不在其中）
+NODE_ORDER = [
+    "task_import", "entity_bind", "evidence_build", "draft_gen", "rule_check",
+    "page_split", "asset_gen", "ocr_read", "cross_check", "risk_classify",
+    "review_queue", "batch_signoff", "publish_snapshot",
+]
 
 
 def _done_msg(node: str, data: dict) -> str:

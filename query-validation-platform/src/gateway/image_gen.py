@@ -11,11 +11,16 @@ def _headers() -> dict:
     return {"Authorization": f"Bearer {settings.openai_image_api_key}"}
 
 
-async def _download_image_bytes(url: str) -> bytes:
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        return resp.content
+async def _download_image_bytes(url: str) -> tuple:
+    """取参考图字节，返回 (bytes, content_type)。
+
+    复用 fetch_image_bytes：支持本地产出（/static/... 读磁盘）、openox 签名
+    内联 URL 本地解码、远程带浏览器 UA/Referer 防盗链。直接用 httpx 裸 GET
+    会对本地路径抛 UnsupportedProtocol、对防盗链图床 403，导致图生图被静默
+    降级成文生图（2026-08-20 对比模式实景图未生效的根因）。
+    """
+    from src.gateway.ocr import fetch_image_bytes
+    return await fetch_image_bytes(url)
 
 
 def _mock_result(prompt: str) -> dict:
@@ -46,8 +51,11 @@ async def generate_image(prompt: str, size: str = None,
             if reference_image_urls:
                 try:
                     return await _edit_with_references(prompt, reference_image_urls, size)
-                except httpx.HTTPError:
-                    # 参考图下载失败 → 降级文生图
+                except Exception as e:  # noqa: BLE001
+                    # 参考图下载失败 / edits 接口报错 → 降级文生图，必须留痕，
+                    # 静默降级会让"对比模式用实景图"失效且无人察觉
+                    print(f"[image_gen] 图生图失败，降级文生图: {type(e).__name__}: {e}",
+                          flush=True)
                     return await _generate(prompt, size)
             return await _generate(prompt, size)
         except Exception as e:  # noqa: BLE001
@@ -78,8 +86,10 @@ async def _edit_with_references(prompt: str, reference_image_urls: list[str],
     url = f"{settings.openai_image_base_url}/images/edits"
     files = []
     for i, ref_url in enumerate(reference_image_urls):
-        content = await _download_image_bytes(ref_url)
-        files.append(("image[]", (f"ref_{i}.png", content, "image/png")))
+        content, ctype = await _download_image_bytes(ref_url)
+        ext = {"image/png": "png", "image/jpeg": "jpg",
+               "image/webp": "webp"}.get(ctype, "png")
+        files.append(("image[]", (f"ref_{i}.{ext}", content, ctype)))
     # gpt-image-2 编辑时自动高保真，传 input_fidelity 会返回 400，故不传
     data = {"model": IMAGE_MODEL, "prompt": prompt, "size": size,
             "n": "1", "response_format": "url"}

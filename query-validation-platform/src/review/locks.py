@@ -19,7 +19,11 @@ async def acquire_lock(task_id: str, role: str, reviewer_name: str) -> dict:
         for s in sessions:
             if s.locked_at and s.last_heartbeat_at:
                 if (now - s.last_heartbeat_at).total_seconds() < 30:
-                    return {"acquired": False, "locked_by": str(s.reviewer_id)}
+                    from sqlalchemy import text
+                    name = (await session.execute(
+                        text("SELECT name FROM users WHERE id = :uid"),
+                        {"uid": s.reviewer_id})).scalar()
+                    return {"acquired": False, "locked_by": name or str(s.reviewer_id)}
         if sessions:
             for s in sessions:
                 s.reviewer_id = reviewer_id

@@ -30,24 +30,23 @@ async def main() -> None:
         sys.exit(1)
 
     try:
-        schema = Path("migrations/001_initial_schema.sql").read_text()
-        await conn.execute(schema)
-        print("[init] 21 张表已就绪")
+        # 按文件名顺序应用全部迁移（均幂等）；排除 macOS AppleDouble（._*）等垃圾文件
+        migrations = [m for m in sorted(Path("migrations").glob("*.sql"))
+                      if not m.name.startswith(".")]
+        for m in migrations:
+            await conn.execute(m.read_text())
+        print(f"[init] 迁移已应用（{len(migrations)} 个文件）")
 
-        pw = hashlib.sha256("12345678".encode()).hexdigest()
+        # 账号只补不重置：已存在的用户保留其当前密码（admin 可能在后台改过）
+        pw = hashlib.sha256("1qaz@WSX".encode()).hexdigest()
         for name, role in USERS:
             exists = await conn.fetchval("SELECT id FROM users WHERE name = $1", name)
-            if exists:
-                await conn.execute(
-                    "UPDATE users SET password_hash = $1, role = $2 WHERE name = $3",
-                    pw, role, name,
-                )
-            else:
+            if not exists:
                 await conn.execute(
                     "INSERT INTO users (name, role, password_hash) VALUES ($1, $2, $3)",
                     name, role, pw,
                 )
-        print("[init] 账号就绪（张三/李四/王五，密码 12345678）")
+        print("[init] 账号就绪（张三/李四/王五，新部署初始密码 1qaz@WSX，已存在账号不重置）")
     finally:
         await conn.close()
 

@@ -17,12 +17,20 @@ async def web_search(query: str, count: int = 6) -> list:
     raise ValueError(f"unknown web search provider: {provider}")
 
 
-async def deepseek_verify(query: str) -> str:
-    """DeepSeek 联网搜索独立验证，返回总结文本（用于与豆包结构化来源交叉校验）。"""
+async def deepseek_verify(query: str) -> tuple:
+    """DeepSeek 联网搜索独立验证，返回 (总结文本, 成本元)（用于与豆包结构化来源交叉校验）。"""
+    from src.gateway.cost_tracker import estimate_cost
     r = await litellm.aresponses(
         model="deepseek/deepseek-v4-pro", input=query,
         tools=[{"type": "web_search"}], api_key=settings.deepseek_api_key)
-    return r.output_text if hasattr(r, "output_text") else str(r)
+    text = r.output_text if hasattr(r, "output_text") else str(r)
+    cost = 0.0
+    usage = getattr(r, "usage", None)
+    if usage:
+        cost = estimate_cost("deepseek/deepseek-v4-pro",
+                             getattr(usage, "prompt_tokens", 0) or 0,
+                             getattr(usage, "completion_tokens", 0) or 0)
+    return text, cost
 
 
 def _extract_founded_year(text: str):

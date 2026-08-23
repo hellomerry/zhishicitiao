@@ -19,7 +19,12 @@ async def check_or_record_node_event(session, task_id, node_name: str,
         select(NodeEvent).where(NodeEvent.node_idempotency_key == key))
     row = existing.first()
     if row is not None:
-        return None  # already done, idempotent skip
+        ev = row[0]
+        if ev.error_class is None and ev.finished_at is not None:
+            return None  # 已成功完成，幂等跳过
+        # 失败或中断（崩溃）的节点不算完成：删掉旧事件记录，重新执行
+        await session.delete(ev)
+        await session.flush()
     event = NodeEvent(
         task_id=task_id, node_name=node_name, node_idempotency_key=key,
         enqueued_at=datetime.now(timezone.utc),

@@ -24,3 +24,16 @@ query-validation-platform/.env
 # 打包文件（含真实 API key，禁止提交 GitHub）
 *.tar.gz
 *.zip
+
+# 生成产物 / 导出
+query-validation-platform/static/generated/
+query-validation-platform/exports/
+
+# 数据库备份
+*.dump
+
+# 移交包（含密钥，禁止提交）
+图文生产平台_移交包_*/
+
+# macOS AppleDouble
+._*

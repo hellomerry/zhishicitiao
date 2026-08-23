@@ -23,10 +23,10 @@ _ALL_TABLES = [
     "drafts", "page_copies", "assets", "ocr_results", "rule_results",
     "cross_checks", "risk_classifications", "review_sessions", "review_actions",
     "issues", "batches", "batch_members", "approvals", "publish_snapshots",
-    "node_events",
+    "node_events", "prompt_templates", "activity_logs", "reject_marks",
 ]
 
-_MIGRATION = Path(__file__).resolve().parent.parent / "migrations" / "001_initial_schema.sql"
+_MIGRATION_DIR = Path(__file__).resolve().parent.parent / "migrations"
 
 
 def _run(coro):
@@ -45,7 +45,11 @@ async def _ensure_test_db():
 
     conn = await asyncpg.connect(_TEST_DSN)
     try:
-        await conn.execute(_MIGRATION.read_text())
+        # 按文件名顺序应用全部迁移（均为幂等写法）；排除 macOS AppleDouble（._*）
+        for m in sorted(_MIGRATION_DIR.glob("*.sql")):
+            if m.name.startswith("."):
+                continue
+            await conn.execute(m.read_text())
     finally:
         await conn.close()
 
@@ -75,15 +79,17 @@ def clean_db(setup_test_db):
 # ============ 外部调用 mock ============
 FAKE_IMAGE = {"hash": "abc123", "image_url": "https://example.com/i.png", "model_version": "gpt-image-1.5"}
 FAKE_SEARCH = [{"title": "来源", "url": "https://example.com/src", "summary": "成立于1990年"}]
-FAKE_VERIFY = "成立于1990年"
+FAKE_VERIFY = ("成立于1990年", 0.001)
 FAKE_IMAGES = [{"title": "实景图", "image_url": "https://example.com/real.png", "source": "bing", "engine": "bing"}]
+FAKE_OCR = {"raw_text": "成立于1990年 测试文字", "cost_cny": 0.001, "model": "qwen-vl-ocr"}
 
 
 @pytest.fixture(autouse=True)
 def mock_external_calls():
-    # 测试环境不真实调用生图/联网搜索/搜图 API
+    # 测试环境不真实调用生图/联网搜索/搜图/OCR API
     with patch("src.gateway.image_gen.generate_image", new=AsyncMock(return_value=FAKE_IMAGE)), \
          patch("src.gateway.web_search.web_search", return_value=FAKE_SEARCH), \
          patch("src.gateway.web_search.deepseek_verify", return_value=FAKE_VERIFY), \
-         patch("src.gateway.image_search.search_image", return_value=FAKE_IMAGES):
+         patch("src.gateway.image_search.search_image", return_value=FAKE_IMAGES), \
+         patch("src.gateway.ocr.ocr_image", new=AsyncMock(return_value=FAKE_OCR)):
         yield
