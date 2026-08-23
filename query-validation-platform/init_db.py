@@ -34,7 +34,7 @@ async def main() -> None:
         migrations = [m for m in sorted(Path("migrations").glob("*.sql"))
                       if not m.name.startswith(".")]
         for m in migrations:
-            await conn.execute(m.read_text())
+            await conn.execute(m.read_text(encoding="utf-8"))
         print(f"[init] 迁移已应用（{len(migrations)} 个文件）")
 
         # 账号只补不重置：已存在的用户保留其当前密码（admin 可能在后台改过）
