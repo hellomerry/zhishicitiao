@@ -26,6 +26,23 @@ def _persist_image(task_id, page_index, tag: str, data: bytes, ctype: str) -> st
     (GENERATED_DIR / name).write_bytes(data)
     return f"/static/generated/{name}"
 
+
+def text_similarity(expected: str, actual: str) -> float:
+    """分页文案 vs OCR 识别文字的字级相似度（0-1）。
+
+    只保留汉字/字母/数字（忽略标点空白），用 difflib 比率衡量吻合度。
+    低分通常意味着图上文字扭曲/伪汉字（gpt-image-2 中文渲染通病，2026-08-25 用户反馈）。
+    """
+    import difflib
+    import re
+    norm = lambda s: "".join(re.findall(r"[一-鿿A-Za-z0-9]", s or ""))
+    e, a = norm(expected), norm(actual)
+    if not e:
+        return 1.0
+    if not a:
+        return 0.0
+    return difflib.SequenceMatcher(None, e, a).ratio()
+
 NODES = [
     "task_import", "entity_bind", "evidence_build", "draft_gen",
     "rule_check", "page_split", "asset_gen", "ocr_read",
@@ -361,6 +378,45 @@ async def _dedupe_and_validate(asset: dict, prompt: str, reference_urls,
     return asset, extra
 
 
+async def _text_quality_gate(asset: dict, prompt: str, reference_urls,
+                             task_id, page_index: int, expected_text: str,
+                             seen_hashes: set) -> tuple:
+    """出图文字质检（2026-08-25 用户反馈「文字扭曲概率非常大」）：OCR 识别图上文字，
+    与分页文案对撞，相似度低于阈值判为文字扭曲，换构图重生成
+    （最多 settings.asset_text_max_attempts 次）；仍不达标在 model_version 打
+    text_garble 标记，交人工审核定夺。OCR 服务异常不阻塞出图（视为未知、不重试，
+    后续 ocr_read 节点会再暴露）。返回 (asset, 重生成次数, OCR 成本)。"""
+    from src.gateway.ocr import ocr_image
+    attempts = 0
+    ocr_cost = 0.0
+    if not (expected_text or "").strip():
+        return asset, attempts, ocr_cost
+    while True:
+        try:
+            ocr = await ocr_image(asset["image_url"])
+            ocr_cost += ocr.get("cost_cny", 0.0)
+            sim = text_similarity(expected_text, ocr["raw_text"])
+        except Exception:
+            traceback.print_exc()
+            return asset, attempts, ocr_cost
+        if sim >= settings.ocr_text_similarity_threshold:
+            return asset, attempts, ocr_cost
+        if attempts >= settings.asset_text_max_attempts:
+            asset["model_version"] += f"|text_garble:{sim:.2f}"
+            return asset, attempts, ocr_cost
+        attempts += 1
+        print(f"[asset_gen] 任务{task_id} 第{page_index}页文字相似度 {sim:.2f} "
+              f"低于阈值 {settings.ocr_text_similarity_threshold}，第 {attempts} 次重生成")
+        regen = await _generate_single_asset(
+            task_id, page_index,
+            prompt + "（上一版图中文字扭曲/乱码：请进一步减少图中文字，"
+                     "只保留大标题和最关键的一行字，确保每个汉字笔画正确）",
+            reference_urls)
+        asset, dedupe_extra = await _dedupe_and_validate(
+            regen, prompt, reference_urls, task_id, page_index, seen_hashes)
+        attempts += dedupe_extra
+
+
 async def node_asset_gen(input_data: dict) -> dict:
     import asyncio
     from src.models.tasks import Task
@@ -393,6 +449,7 @@ async def node_asset_gen(input_data: dict) -> dict:
     results = []
     seen_hashes = set()
     extra_gen = 0
+    ocr_gate_cost = 0.0
     for i in range(1, 7):
         r = await _generate_single_asset(
             input_data["task_id"], i, prompts[i - 1], reference_urls)
@@ -400,6 +457,13 @@ async def node_asset_gen(input_data: dict) -> dict:
             r, extra = await _dedupe_and_validate(r, prompts[i - 1], reference_urls,
                                                   input_data["task_id"], i, seen_hashes)
             extra_gen += extra
+            # 文字质检：OCR 对撞分页文案，扭曲图自动重生成（文字扭曲是最高频客诉）
+            page_body = page_list[i - 1].body if i - 1 < len(page_list) else ""
+            r, text_extra, gate_cost = await _text_quality_gate(
+                r, prompts[i - 1], reference_urls, input_data["task_id"], i,
+                page_body or "", seen_hashes)
+            extra_gen += text_extra
+            ocr_gate_cost += gate_cost
         results.append(r)
         await asyncio.sleep(settings.image_gen_delay_seconds)
     async with SessionLocal() as session:
@@ -409,7 +473,8 @@ async def node_asset_gen(input_data: dict) -> dict:
     return {"asset_count": len(results),
             "image_urls": [r.get("image_url") for r in results if r.get("image_url")],
             "cost_cny": 0 if settings.mock_image_gen
-                        else (len(results) + extra_gen) * settings.image_cost_per_image_cny}
+                        else (len(results) + extra_gen) * settings.image_cost_per_image_cny
+                             + ocr_gate_cost}
 
 
 async def node_ocr_read(input_data: dict) -> dict:

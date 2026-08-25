@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     # OCR（阿里百炼 qwen 系列，模型可按需换 qwen3.5-ocr / qwen3-vl-flash 等）
     ocr_model: str = "qwen-vl-ocr"
     ocr_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    # 出图文字质检（OCR 与分页文案对撞，防文字扭曲，2026-08-25 用户反馈）
+    ocr_text_similarity_threshold: float = 0.85  # 低于该相似度判为文字扭曲
+    asset_text_max_attempts: int = 2             # 每张图质检失败后的最大重生成次数
     # 按次计费的外部服务（价格不确定，可手工补充，单位：元/次）
     doubao_search_cost_per_call: float = 0.0   # 豆包搜索（证据包）
     openserp_cost_per_call: float = 0.0        # OpenSERP 搜实景图
