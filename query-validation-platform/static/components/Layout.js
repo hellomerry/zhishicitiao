@@ -11,6 +11,7 @@ const AppLayout = {
         { path: '/monitor', icon: '📡', label: '实时监控' },
         { path: '/review', icon: '📋', label: '任务审核' },
         { path: '/sample', icon: '🎲', label: '随机抽查' },
+        { path: '/trash', icon: '🗑️', label: '回收站' },
         { path: '/settings', icon: '🔑', label: '我的设置' },
         { path: '/users', icon: '👥', label: '用户管理', admin: true },
         { path: '/admin', icon: '⚙️', label: '系统管理', admin: true },

@@ -31,6 +31,9 @@ const TasksView = {
     canRetry() {
       return this.detailTask && ['failed', 'rejected'].includes(this.detailTask.status);
     },
+    canTrash() {
+      return this.detailTask && ['review', 'approved', 'rejected', 'failed'].includes(this.detailTask.status);
+    },
     retryLabel() {
       if (!this.detailTask) return '';
       if (this.detailTask.status === 'rejected') {
@@ -128,6 +131,15 @@ const TasksView = {
         await this.open(this.detailTask);
       } catch (e) { this.detailError = e.message; }
       finally { this.retrying = false; }
+    },
+    async trashTask() {
+      if (!this.detailTask) return;
+      if (!confirm('确定把该任务移入回收站？\n\n任务将从任务中心隐藏，生成的文案和配图暂时保留；可在「回收站」中恢复，或由管理员彻底删除。')) return;
+      try {
+        await api.post(`/api/tasks/${this.detailTask.id}/trash?actor=` + encodeURIComponent(this.actorName));
+        this.close();
+        await this.load();
+      } catch (e) { this.detailError = e.message; }
     },
     onSse() {
       // 任意任务/节点事件 → 节流刷新列表与打开的详情
@@ -249,8 +261,9 @@ const TasksView = {
           <h3>生产进度</h3>
           <steps-bar :nodes="nodes" :completed="detail.completed_nodes" :current="detailTask.status === 'failed' ? detail.current_node : (liveOfDetail && liveOfDetail.current_node) || detail.current_node" :failed="detailTask.status === 'failed'"></steps-bar>
 
-          <div v-if="canRetry" style="margin:12px 0">
-            <button class="btn btn-primary" :disabled="retrying" @click="retry">{{ retrying ? '处理中…' : retryLabel }}</button>
+          <div v-if="canRetry || canTrash" style="margin:12px 0">
+            <button v-if="canRetry" class="btn btn-primary" :disabled="retrying" @click="retry">{{ retrying ? '处理中…' : retryLabel }}</button>
+            <button v-if="canTrash" class="btn btn-outline" @click="trashTask">🗑 移入回收站</button>
           </div>
 
           <template v-if="detail.reject_marks && detail.reject_marks.length">

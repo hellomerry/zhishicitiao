@@ -112,6 +112,9 @@ async def list_tasks(status: str | None = None, mode: str | None = None,
         filters = []
         if status:
             filters.append(Task.status == status)
+        else:
+            # 默认列表不含回收站（2026-08-26 回收站功能）
+            filters.append(Task.status != "trashed")
         if mode:
             filters.append(Task.mode == mode)
         if risk_level:

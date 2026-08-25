@@ -21,3 +21,7 @@ class Task(Base):
     template_id = Column(UUID(as_uuid=True))
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     created_by = Column(UUID(as_uuid=True))
+    # 回收站（2026-08-26）：status="trashed" 时记录原状态/时间/操作人，恢复用
+    prev_status = Column(Text)
+    trashed_at = Column(TIMESTAMP(timezone=True))
+    trashed_by = Column(Text)

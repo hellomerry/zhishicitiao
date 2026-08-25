@@ -12,6 +12,7 @@ const router = createRouter({
     { path: '/monitor', component: MonitorView },
     { path: '/review', component: ReviewView },
     { path: '/sample', component: SampleView },
+    { path: '/trash', component: TrashView },
     { path: '/settings', component: SettingsView },
     { path: '/prompts', redirect: '/settings' },
     { path: '/users', component: UsersView },

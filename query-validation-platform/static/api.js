@@ -16,6 +16,7 @@ window.STATUS = {
   approved:   { label: '已通过', cls: 'tag-green' },
   rejected:   { label: '已驳回', cls: 'tag-red' },
   failed:     { label: '失败',   cls: 'tag-red' },
+  trashed:    { label: '回收站', cls: 'tag-gray' },
 };
 window.MODE = {
   general: { label: '通用', desc: '通用科普/教程，纯文生图' },
@@ -42,4 +43,5 @@ window.api = {
   get(url) { return this._req('GET', url); },
   post(url, body) { return this._req('POST', url, body || {}); },
   postForm(url, formData) { return this._req('POST', url, undefined, formData); },
+  del(url) { return this._req('DELETE', url); },
 };
