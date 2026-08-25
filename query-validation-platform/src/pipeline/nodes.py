@@ -129,6 +129,50 @@ async def _latest_draft_body(session, task_id):
     return draft.body if draft else ""
 
 
+_SUBJECT_SPLIT_PROMPT = """从下面的对比类查询中提取两个被对比的主体名称。
+输出严格 JSON：{"a": "主体A名称", "b": "主体B名称"}，不要输出任何其他内容。
+若查询并非两个主体的对比，输出 {"a": "", "b": ""}。
+
+查询：{query}"""
+
+
+def _heuristic_split_subjects(query: str):
+    """兜底拆分：按常见对比连词切 query（不依赖 LLM）。返回 (a, b) 或 None。"""
+    import re
+    q = re.sub(r"[？?！!。.\s]+$", "", (query or "").strip())
+    # 先剥掉结尾的决策措辞（怎么选/哪个好…），再用连词切分
+    q = re.sub(r"(怎么选|哪个好|哪个值得买|选哪个|买哪个|哪个更适合)$", "", q).strip(" ，,：:")
+    for sep in ("对比", " VS ", " vs ", "pk", "PK", "和", "与"):
+        if sep in q:
+            a, b = q.split(sep, 1)
+            a = a.strip(" ，,：:")
+            # b 可能还带「：小升初」类场景后缀，取主体名部分
+            b = re.split(r"[：，,]", b)[0].strip(" ，,：:")
+            if a and b:
+                return a, b
+    return None
+
+
+async def _split_compare_subjects(query: str):
+    """对比模式拆主体（2026-08-25 用户反馈③④：对比类必须双主体、多角度）。
+    LLM 优先，失败退回连词启发式，再失败返回 None（退回整词搜索的旧行为）。"""
+    import json
+    import re
+    try:
+        r = await call_with_failover(
+            _SUBJECT_SPLIT_PROMPT.replace("{query}", query),
+            DEEPSEEK_MODEL, KIMI_MODEL, max_retries=1)
+        m = re.search(r"\{[^{}]*\}", r.get("content") or "", re.S)
+        if m:
+            data = json.loads(m.group(0))
+            a, b = (data.get("a") or "").strip(), (data.get("b") or "").strip()
+            if a and b:
+                return a, b
+    except Exception:
+        traceback.print_exc()  # 拆分失败不阻塞流水线，走启发式/整词兜底
+    return _heuristic_split_subjects(query)
+
+
 async def node_entity_bind(input_data: dict) -> dict:
     """搜实景图/实物图，存为 official 素材（compare/single 作参考图；general 跳过）。"""
     import hashlib
@@ -143,9 +187,27 @@ async def node_entity_bind(input_data: dict) -> dict:
     if mode == "general":
         return {"searched_images": 0}
     from src.gateway.ocr import fetch_image_bytes
-    images = await search_image(query, count=6)
+    # compare 模式拆主体 A/B 分搜（各带整体图 + 细节/侧面图，覆盖多角度对比），
+    # 拆不出来时退回整词搜索（旧行为）；single 模式整词搜。
+    tagged = []  # [(subject_tag, img_dict)]
+    search_calls = 0
+    if mode == "compare":
+        pair = await _split_compare_subjects(query)
+    else:
+        pair = None
+    if pair:
+        for label, name in (("A", pair[0]), ("B", pair[1])):
+            for tag, q, cnt in ((f"{label}:{name}", name, 3),
+                                (f"{label}:{name}（细节）", f"{name} 细节 侧面", 2)):
+                got = await search_image(q, count=cnt)
+                search_calls += 1
+                tagged += [(tag, g) for g in got]
+    else:
+        images = await search_image(query, count=6)
+        search_calls = 1
+        tagged = [(query, g) for g in images]
     async with SessionLocal() as session:
-        for i, img in enumerate(images, start=1):
+        for i, (tag, img) in enumerate(tagged, start=1):
             image_url = img["image_url"]
             origin_url = None
             if not settings.mock_image_gen:
@@ -159,14 +221,15 @@ async def node_entity_bind(input_data: dict) -> dict:
                     pass  # 下载失败保留原地址，展示层走代理兜底
             session.add(Asset(
                 task_id=input_data["task_id"], page_index=i,
-                subject=query, source_type="official", copyright_status="unknown",
+                subject=tag, source_type="official", copyright_status="unknown",
                 hash=hashlib.md5(image_url.encode()).hexdigest(),
                 image_url=image_url, origin_url=origin_url,
                 model_version=img.get("engine", "search"),
                 is_illustration=False))
         await session.commit()
-    return {"searched_images": len(images),
-            "cost_cny": settings.openserp_cost_per_call}
+    return {"searched_images": len(tagged),
+            "subjects": list(pair) if pair else [],
+            "cost_cny": settings.openserp_cost_per_call * search_calls}
 
 
 async def node_evidence_build(input_data: dict) -> dict:
@@ -432,12 +495,40 @@ async def node_asset_gen(input_data: dict) -> dict:
             select(PageCopy).where(PageCopy.task_id == input_data["task_id"]))
         page_list = pages.scalars().all()
         reference_urls = None
+        pool_a = pool_b = common = None
         if mode in ("compare", "single"):
             refs = await session.execute(
                 select(Asset).where(Asset.task_id == input_data["task_id"],
                                     Asset.source_type == "official",
                                     Asset.is_illustration == False))
-            reference_urls = [a.image_url for a in refs.scalars() if a.image_url]
+            ref_assets = [a for a in refs.scalars() if a.image_url]
+            reference_urls = [a.image_url for a in ref_assets]
+            # compare 分主体参考图池（2026-08-25 反馈③④：每页双主体同框 + 多角度轮换）
+            pool_a = [a.image_url for a in ref_assets
+                      if (a.subject or "").startswith("A:")]
+            pool_b = [a.image_url for a in ref_assets
+                      if (a.subject or "").startswith("B:")]
+            common = [a.image_url for a in ref_assets
+                      if not (a.subject or "").startswith(("A:", "B:"))]
+
+    def _page_refs(page_i: int):
+        """每页参考图路由：compare 拆出 A/B 池时每页喂 A、B 各 2 张（按页码轮换，
+        不同页拿到不同角度的参考图）+ 无标签公共图；拆不出主体时退回全量（旧行为）。"""
+        if mode != "compare" or not (pool_a or pool_b):
+            return reference_urls
+        picks = []
+
+        def _take(pool, n=2):
+            if pool:
+                for k in range(n):
+                    u = pool[(page_i - 1 + k) % len(pool)]
+                    if u not in picks:
+                        picks.append(u)
+
+        _take(pool_a)
+        _take(pool_b)
+        picks += [u for u in (common or []) if u not in picks]
+        return picks or reference_urls
     # 自定义生图模板（提示词库启用的）替代系统模板；排版轮换仍由代码追加
     image_template = await get_effective_prompt("image_gen", mode, owner_id)
     prompts = [get_image_prompt(mode, p.body or "", i, template=image_template)
@@ -451,16 +542,17 @@ async def node_asset_gen(input_data: dict) -> dict:
     extra_gen = 0
     ocr_gate_cost = 0.0
     for i in range(1, 7):
+        refs_i = _page_refs(i) if mode in ("compare", "single") else None
         r = await _generate_single_asset(
-            input_data["task_id"], i, prompts[i - 1], reference_urls)
+            input_data["task_id"], i, prompts[i - 1], refs_i)
         if not settings.mock_image_gen:
-            r, extra = await _dedupe_and_validate(r, prompts[i - 1], reference_urls,
+            r, extra = await _dedupe_and_validate(r, prompts[i - 1], refs_i,
                                                   input_data["task_id"], i, seen_hashes)
             extra_gen += extra
             # 文字质检：OCR 对撞分页文案，扭曲图自动重生成（文字扭曲是最高频客诉）
             page_body = page_list[i - 1].body if i - 1 < len(page_list) else ""
             r, text_extra, gate_cost = await _text_quality_gate(
-                r, prompts[i - 1], reference_urls, input_data["task_id"], i,
+                r, prompts[i - 1], refs_i, input_data["task_id"], i,
                 page_body or "", seen_hashes)
             extra_gen += text_extra
             ocr_gate_cost += gate_cost
