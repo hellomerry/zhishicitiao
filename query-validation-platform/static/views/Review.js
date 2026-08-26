@@ -45,7 +45,7 @@ const ReviewView = {
     },
   },
   methods: {
-    fmtTime, roleName,
+    fmtTime, roleName, riskReason,
     riskTag(r) { return RISK[r] || null; },
     modeLabel(m) { return MODE[m] ? MODE[m].label : (m || '-'); },
     markKey(t, p) { return `${t}:${p}`; },
@@ -267,7 +267,7 @@ const ReviewView = {
             <div class="card" v-if="current.risk">
               <h2>风险判定</h2>
               <p><span v-if="riskTag(current.risk.level)" class="tag" :class="riskTag(current.risk.level).cls">{{ riskTag(current.risk.level).label }}</span></p>
-              <ul class="plain-list" v-if="current.risk.reasons"><li v-for="r in current.risk.reasons" :key="r">{{ r }}</li></ul>
+              <ul class="plain-list" v-if="current.risk.reasons"><li v-for="r in current.risk.reasons" :key="r">{{ riskReason(r) }}</li></ul>
             </div>
           </template>
         </div>

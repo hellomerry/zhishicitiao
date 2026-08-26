@@ -24,6 +24,17 @@ window.MODE = {
   compare: { label: '对比', desc: '两主体对比，搜实景图做图生图参考' },
 };
 window.RISK = { green: { label: '绿', cls: 'tag-green' }, yellow: { label: '黄', cls: 'tag-yellow' }, red: { label: '红', cls: 'tag-red' } };
+// 风险原因代码 → 中文说明（src/risk/classifier.py + src/quality/rules.py 的代码集，未知代码原样显示）
+window.RISK_REASON = {
+  p0_issue: '存在未关闭的 P0 问题单（事实/合规硬伤）',
+  ocr_mismatch: '图文不一致（OCR 识别文字与分页文案不匹配）',
+  evidence_incomplete: '证据链不完整（事实点缺少来源支撑）',
+  word_count_400_700: '正文字数不在 400–700 字区间',
+  title_max_25: '标题超过 25 字',
+  no_absolute_words: '含绝对化用语（最/第一/100%/唯一 等）',
+  has_disclaimer: '含安全/疗效类表述但缺少免责声明',
+};
+window.riskReason = function (code) { return RISK_REASON[code] || code; };
 
 // 通用客户端排序：rows 按 key 排序返回新数组（order: asc/desc），null/undefined 恒排最后。
 // 各视图表格「点击表头排序」的统一实现；服务端分页的列表（任务中心/回收站）走 sort/order 参数。

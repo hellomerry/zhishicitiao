@@ -58,7 +58,7 @@ const TasksView = {
     },
   },
   methods: {
-    fmtTime, roleName,
+    fmtTime, roleName, riskReason,
     statusTag(s) { return STATUS[s] || { label: s, cls: 'tag-gray' }; },
     modeLabel(m) { return MODE[m] ? MODE[m].label : (m || '-'); },
     riskTag(r) { return RISK[r] || null; },
@@ -360,7 +360,7 @@ const TasksView = {
 
           <template v-if="detail.risk && detail.risk.reasons && detail.risk.reasons.length">
             <h3>风险原因</h3>
-            <ul class="plain-list"><li v-for="r in detail.risk.reasons" :key="r">{{ r }}</li></ul>
+            <ul class="plain-list"><li v-for="r in detail.risk.reasons" :key="r">{{ riskReason(r) }}</li></ul>
           </template>
 
           <template v-if="detail.draft">

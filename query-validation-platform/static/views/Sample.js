@@ -14,6 +14,7 @@ const SampleView = {
     },
   },
   methods: {
+    riskReason,
     pageCopyOf(i) {
       const pcs = (this.item && this.item.page_copies) || [];
       const p = pcs.find(x => x.page_index === i);
@@ -66,7 +67,7 @@ const SampleView = {
         </p>
         <div v-if="item.risk && item.risk.reasons && item.risk.reasons.length" style="margin-top:10px">
           <label>风险原因</label>
-          <ul class="plain-list"><li v-for="r in item.risk.reasons" :key="r">{{ r }}</li></ul>
+          <ul class="plain-list"><li v-for="r in item.risk.reasons" :key="r">{{ riskReason(r) }}</li></ul>
         </div>
       </div>
       <div class="card">
