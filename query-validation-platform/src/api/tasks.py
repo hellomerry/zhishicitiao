@@ -265,7 +265,8 @@ async def task_detail(task_id: str, actor: str = ""):
             "draft": {"body": draft.body, "model_version": draft.model_version,
                       "prompt_version": draft.prompt_version} if draft else None,
             "page_copies": [{"page_index": p.page_index, "body": p.body} for p in page_copies],
-            "assets": [{"page_index": a.page_index, "source_type": a.source_type,
+            "assets": [{"id": str(a.id), "page_index": a.page_index,
+                        "subject": a.subject, "source_type": a.source_type,
                         "image_url": a.image_url,
                         "display_url": f"/api/assets/{a.id}/image"} for a in assets],
             "claims": [{"claim_text": c.claim_text, "risk_level": c.risk_level,
@@ -414,6 +415,95 @@ async def asset_image(asset_id: str):
         raise HTTPException(status_code=502, detail=f"image fetch failed: {e}")
     return Response(content=data, media_type=ctype,
                     headers={"Cache-Control": "private, max-age=86400"})
+
+
+# ── 参考图人工维护（2026-08-26 用户反馈：搜到的参考图质量差，支持手动换图）────
+
+
+@router.delete("/api/assets/{asset_id}/ref")
+async def delete_ref_asset(asset_id: str, actor: str = "anonymous"):
+    """删除一张参考图（仅 source_type=official 的搜图资产；AI 生成图不可经此删除）。
+    归属隔离：非属主非 admin → 404。只删库行，磁盘文件随任务彻底删除时清理。"""
+    from src.models.assets import Asset
+    from src.services.ownership import check_owner, get_actor
+    try:
+        aid = uuid.UUID(asset_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid asset_id")
+    async with SessionLocal() as session:
+        uid, role = await get_actor(session, actor)
+        asset = (await session.execute(
+            select(Asset).where(Asset.id == aid))).scalars().first()
+        if not asset:
+            raise HTTPException(status_code=404, detail="asset not found")
+        task = (await session.execute(
+            select(Task).where(Task.id == asset.task_id))).scalars().first()
+        if not task:
+            raise HTTPException(status_code=404, detail="task not found")
+        check_owner(task, uid, role)
+        if asset.source_type != "official":
+            raise HTTPException(status_code=400,
+                                detail="仅参考图（official）可经此删除，AI 生成图请走驳回重出")
+        tid = str(asset.task_id)
+        await session.delete(asset)
+        await session.commit()
+    await log_action(actor, "delete_ref_asset", f"asset_id={asset_id}", task_id=tid)
+    return {"deleted": True}
+
+
+class RefSearchIn(BaseModel):
+    actor: str = "anonymous"
+    query: str | None = None    # 自定义搜索词；缺省用任务 query + 高清
+    subject: str | None = None  # 资产标记（对比主体等）；缺省用搜索词
+
+
+@router.post("/api/tasks/{task_id}/ref_search")
+async def ref_search(task_id: str, payload: RefSearchIn):
+    """人工重搜参考图：按给定搜索词搜 8 张，质量过滤后择优保留 4 张，
+    作为 official 资产追加到任务（不删旧图，旧图由用户手动删除）。
+    归属隔离：非属主非 admin → 404。"""
+    import hashlib
+    from src.models.assets import Asset
+    from src.gateway.image_search import search_image
+    from src.pipeline.nodes import _download_quality_refs
+    from src.services.ownership import check_owner, get_actor
+    from src.config import settings
+    try:
+        tid = uuid.UUID(task_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid task_id")
+    async with SessionLocal() as session:
+        uid, role = await get_actor(session, payload.actor)
+        task = (await session.execute(
+            select(Task).where(Task.id == tid))).scalars().first()
+        if not task:
+            raise HTTPException(status_code=404, detail="task not found")
+        check_owner(task, uid, role)
+        q = (payload.query or "").strip() or f"{task.query} 高清"
+        subject = (payload.subject or "").strip() or q
+        got = await search_image(q, count=8)
+        start = ((await session.execute(
+            select(func.max(Asset.page_index)).where(Asset.task_id == tid))
+        ).scalar_one_or_none() or 0) + 1
+        if settings.mock_image_gen:
+            refs = [{"url": g["image_url"], "origin": None,
+                     "engine": g.get("engine", "search")} for g in got[:4]]
+            filtered = 0
+        else:
+            refs, filtered = await _download_quality_refs(
+                str(tid), got, 4, start, "manual")
+        for i, ref in enumerate(refs):
+            session.add(Asset(
+                task_id=tid, page_index=start + i,
+                subject=subject, source_type="official", copyright_status="unknown",
+                hash=hashlib.md5(ref["url"].encode()).hexdigest(),
+                image_url=ref["url"], origin_url=ref["origin"],
+                model_version=ref["engine"],
+                is_illustration=False))
+        await session.commit()
+    await log_action(payload.actor, "ref_search",
+                     f"query={q} added={len(refs)} filtered={filtered}", task_id=str(tid))
+    return {"added": len(refs), "filtered": filtered, "query": q}
 
 
 def _normalize_image(data: bytes, target_size: tuple) -> bytes:

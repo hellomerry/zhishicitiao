@@ -7,6 +7,7 @@ from sqlalchemy import select
 from src.config import settings
 from src.db.session import SessionLocal
 from src.gateway.failover import call_with_failover, DEEPSEEK_MODEL, KIMI_MODEL
+from src.gateway.ocr import fetch_image_bytes
 from src.quality.rules import check_rules
 
 # 生成图本地持久化目录（通过 /static 挂载直接可访问）
@@ -173,8 +174,60 @@ async def _split_compare_subjects(query: str):
     return _heuristic_split_subjects(query)
 
 
+# ── 参考图质量过滤（2026-08-26 用户反馈：搜到的参考图质量差）────────
+_REF_MIN_W, _REF_MIN_H = 640, 480  # 低于此分辨率的参考图判为低质
+
+
+def _image_size(data: bytes):
+    """读图片宽高，读不出（坏图/非图）返回 None。"""
+    try:
+        from io import BytesIO
+        from PIL import Image
+        with Image.open(BytesIO(data)) as img:
+            return img.size
+    except Exception:
+        return None
+
+
+async def _download_quality_refs(task_id, candidates: list[dict], keep: int,
+                                 start_index: int, page_tag: str):
+    """逐张下载候选图并本地化，按分辨率过滤后择优保留前 keep 张。
+
+    宽高均 ≥ 阈值判为达标，达标者按像素量降序取 top-K；下载失败/不达标的进
+    fallback，全部不达标时回退 fallback 前 keep 张（保证参考图不为空，沿用原地址，
+    展示层走代理兜底）。返回 (refs, filtered_count)，ref 含 url/origin/engine。
+    """
+    good = []  # [(像素量, ref)]
+    fallback = []
+    for i, it in enumerate(candidates):
+        ref = {"url": it["image_url"], "origin": None,
+               "engine": it.get("engine", "search")}
+        try:
+            data, ctype = await fetch_image_bytes(it["image_url"])
+        except Exception:
+            fallback.append(ref)
+            continue
+        if not data:
+            fallback.append(ref)
+            continue
+        size = _image_size(data)
+        if size and size[0] >= _REF_MIN_W and size[1] >= _REF_MIN_H:
+            path = _persist_image(task_id, start_index + i, f"ref_{page_tag}", data, ctype)
+            good.append((size[0] * size[1],
+                         {**ref, "url": path, "origin": it["image_url"]}))
+        else:
+            fallback.append(ref)
+    good.sort(key=lambda x: -x[0])
+    refs = [r for _, r in good[:keep]] if good else fallback[:keep]
+    return refs, max(0, len(candidates) - len(good))
+
+
 async def node_entity_bind(input_data: dict) -> dict:
-    """搜实景图/实物图，存为 official 素材（compare/single 作参考图；general 跳过）。"""
+    """搜实景图/实物图，存为 official 素材（compare/single 作参考图；general 跳过）。
+
+    质量策略：搜索词带「高清」提高源头质量；下载后按分辨率过滤择优（mock 模式
+    不下载不过滤，保留旧行为）。ref_filtered 记录被质量过滤淘汰的张数。
+    """
     import hashlib
     from src.models.tasks import Task
     from src.models.assets import Asset
@@ -186,50 +239,44 @@ async def node_entity_bind(input_data: dict) -> dict:
         mode = task.mode or "general"
     if mode == "general":
         return {"searched_images": 0}
-    from src.gateway.ocr import fetch_image_bytes
     # compare 模式拆主体 A/B 分搜（各带整体图 + 细节/侧面图，覆盖多角度对比），
     # 拆不出来时退回整词搜索（旧行为）；single 模式整词搜。
-    tagged = []  # [(subject_tag, img_dict)]
-    search_calls = 0
+    groups = []  # [(tag, 搜索词, 抓取数, 保留数)]
     if mode == "compare":
         pair = await _split_compare_subjects(query)
     else:
         pair = None
     if pair:
         for label, name in (("A", pair[0]), ("B", pair[1])):
-            for tag, q, cnt in ((f"{label}:{name}", name, 3),
-                                (f"{label}:{name}（细节）", f"{name} 细节 侧面", 2)):
-                got = await search_image(q, count=cnt)
-                search_calls += 1
-                tagged += [(tag, g) for g in got]
+            groups.append((f"{label}:{name}", f"{name} 高清", 6, 3))
+            groups.append((f"{label}:{name}（细节）", f"{name} 细节 侧面 高清", 4, 2))
     else:
-        images = await search_image(query, count=6)
-        search_calls = 1
-        tagged = [(query, g) for g in images]
+        groups.append((query, f"{query} 高清", 10, 6))
+    filtered_total = 0
+    saved = 0
     async with SessionLocal() as session:
-        for i, (tag, img) in enumerate(tagged, start=1):
-            image_url = img["image_url"]
-            origin_url = None
-            if not settings.mock_image_gen:
-                try:
-                    # 搜图也立即本地化：图床防盗链/失效不影响后续审核与导出
-                    data, ctype = await fetch_image_bytes(image_url)
-                    origin_url = image_url
-                    image_url = _persist_image(
-                        input_data["task_id"], i, "ref", data, ctype)
-                except Exception:
-                    pass  # 下载失败保留原地址，展示层走代理兜底
-            session.add(Asset(
-                task_id=input_data["task_id"], page_index=i,
-                subject=tag, source_type="official", copyright_status="unknown",
-                hash=hashlib.md5(image_url.encode()).hexdigest(),
-                image_url=image_url, origin_url=origin_url,
-                model_version=img.get("engine", "search"),
-                is_illustration=False))
+        for tag, q, cnt, keep in groups:
+            got = await search_image(q, count=cnt)
+            if settings.mock_image_gen:
+                refs = [{"url": g["image_url"], "origin": None,
+                         "engine": g.get("engine", "search")} for g in got[:keep]]
+            else:
+                refs, filtered = await _download_quality_refs(
+                    input_data["task_id"], got, keep, saved + 1, tag)
+                filtered_total += filtered
+            for ref in refs:
+                saved += 1
+                session.add(Asset(
+                    task_id=input_data["task_id"], page_index=saved,
+                    subject=tag, source_type="official", copyright_status="unknown",
+                    hash=hashlib.md5(ref["url"].encode()).hexdigest(),
+                    image_url=ref["url"], origin_url=ref["origin"],
+                    model_version=ref["engine"],
+                    is_illustration=False))
         await session.commit()
-    return {"searched_images": len(tagged),
+    return {"searched_images": saved, "ref_filtered": filtered_total,
             "subjects": list(pair) if pair else [],
-            "cost_cny": settings.openserp_cost_per_call * search_calls}
+            "cost_cny": settings.openserp_cost_per_call * len(groups)}
 
 
 async def node_evidence_build(input_data: dict) -> dict:

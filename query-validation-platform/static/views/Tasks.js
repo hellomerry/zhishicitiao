@@ -130,6 +130,24 @@ const TasksView = {
       }));
       return gen.concat(ref);
     },
+    async delRef(a) {
+      if (!confirm(`删除这张参考图（参考 ${a.page_index}）？删除后不可恢复。`)) return;
+      try {
+        await api.del(`/api/assets/${a.id}/ref?actor=` + encodeURIComponent(this.actorName));
+        await this.open(this.detailTask);
+      } catch (e) { alert('删除失败：' + e.message); }
+    },
+    async researchRefs() {
+      const def = ((this.detailTask && this.detailTask.query) || '') + ' 高清';
+      const q = prompt('输入参考图搜索词（搜 8 张，质量过滤后保留 4 张追加）：', def);
+      if (q === null || !q.trim()) return;
+      try {
+        const r = await api.post(`/api/tasks/${this.detailTask.id}/ref_search`,
+          { actor: this.actorName, query: q.trim() });
+        alert(`已追加 ${r.added} 张参考图` + (r.filtered ? `（过滤低质 ${r.filtered} 张）` : ''));
+        await this.open(this.detailTask);
+      } catch (e) { alert('重搜失败：' + e.message); }
+    },
     openZoom(a, isRef) {
       const list = this.zoomItems();
       const src = a.display_url || a.image_url;
@@ -351,15 +369,16 @@ const TasksView = {
             </div>
           </template>
 
-          <template v-if="refAssets.length">
-            <h3>实景参考图（{{ refAssets.length }}）<span class="muted" style="font-weight:normal;font-size:13px">仅作生图参考，不随内容交付</span></h3>
-            <div class="img-grid">
-              <figure v-for="a in refAssets" :key="a.page_index">
-                <img :src="a.display_url || a.image_url" loading="lazy" alt="" @click="openZoom(a, true)">
-                <figcaption class="muted">参考 {{ a.page_index }} · 实景抓取</figcaption>
-              </figure>
-            </div>
-          </template>
+          <h3>实景参考图（{{ refAssets.length }}）<span class="muted" style="font-weight:normal;font-size:13px">仅作生图参考，不随内容交付</span>
+            <button class="btn btn-outline btn-sm" style="margin-left:10px" @click="researchRefs">↻ 重搜参考图</button></h3>
+          <div class="img-grid" v-if="refAssets.length">
+            <figure v-for="a in refAssets" :key="a.id">
+              <img :src="a.display_url || a.image_url" loading="lazy" alt="" @click="openZoom(a, true)">
+              <figcaption class="muted">参考 {{ a.page_index }} · 实景抓取
+                <a href="javascript:;" style="color:#c00;margin-left:6px" title="删除此参考图" @click="delRef(a)">删除</a></figcaption>
+            </figure>
+          </div>
+          <p v-else class="muted">暂无参考图，可点「重搜参考图」手动搜索。</p>
 
           <template v-if="detail.claims && detail.claims.length">
             <h3>事实点</h3>

@@ -49,15 +49,16 @@ async def test_compare_splits_subjects_and_searches_separately():
     with patch("src.pipeline.nodes._split_compare_subjects",
                new=AsyncMock(return_value=("小米17 Pro", "荣耀600 Pro"))), \
          patch("src.gateway.image_search.search_image", side_effect=fake_search), \
-         patch("src.gateway.ocr.fetch_image_bytes", side_effect=_fake_fetch), \
+         patch("src.pipeline.nodes.fetch_image_bytes", side_effect=_fake_fetch), \
          patch("src.pipeline.nodes._persist_image",
                side_effect=lambda tid_, i, tag, data, ct: f"/static/generated/ref{i}.png"):
         out = await node_entity_bind({"task_id": tid})
 
     assert out["searched_images"] == 10
     assert out["subjects"] == ["小米17 Pro", "荣耀600 Pro"]
-    assert calls == [("小米17 Pro", 3), ("小米17 Pro 细节 侧面", 2),
-                     ("荣耀600 Pro", 3), ("荣耀600 Pro 细节 侧面", 2)]
+    # 搜索词带「高清」提质量（2026-08-26 参考图质量改进）；假图字节非法 → 全部走 fallback
+    assert calls == [("小米17 Pro 高清", 6), ("小米17 Pro 细节 侧面 高清", 4),
+                     ("荣耀600 Pro 高清", 6), ("荣耀600 Pro 细节 侧面 高清", 4)]
     async with SessionLocal() as session:
         assets = (await session.execute(
             select(Asset).where(Asset.task_id == tid))).scalars().all()
@@ -80,7 +81,7 @@ async def test_compare_fallback_whole_query_when_split_fails():
                new=AsyncMock(return_value=None)), \
          patch("src.gateway.image_search.search_image",
                side_effect=fake_search) as search, \
-         patch("src.gateway.ocr.fetch_image_bytes", side_effect=_fake_fetch), \
+         patch("src.pipeline.nodes.fetch_image_bytes", side_effect=_fake_fetch), \
          patch("src.pipeline.nodes._persist_image",
                side_effect=lambda tid_, i, tag, data, ct: f"/static/generated/ref{i}.png"):
         out = await node_entity_bind({"task_id": tid})
