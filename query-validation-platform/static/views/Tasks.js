@@ -166,7 +166,9 @@ const TasksView = {
         Object.assign(this.exportJob, s);
         if (s.status === 'done') {
           // 打包完成：展示分包下载按钮，用户逐包下载（不自动触发）
+          // 已导出任务已被自动移入回收站，刷新列表让任务中心同步
           clearInterval(this.exportTimer); this.exportTimer = null;
+          this.load();
         } else if (s.status === 'error') {
           clearInterval(this.exportTimer); this.exportTimer = null;
           this.error = '导出失败：' + (s.error || '未知错误');
@@ -217,7 +219,7 @@ const TasksView = {
         <option value="green">绿</option><option value="yellow">黄</option><option value="red">红</option>
       </select>
       <label class="auto-refresh"><input type="checkbox" v-model="auto" style="width:auto"> 自动刷新</label>
-      <template v-if="approvedCount > 0">
+      <template v-if="approvedCount > 0 || exportJob">
         <button v-if="!exportJob" class="btn btn-outline btn-sm" @click="startExport">📦 导出已通过内容包（{{ approvedCount }}）</button>
         <button v-else-if="exportJob.status !== 'done'" class="btn btn-outline btn-sm" @click="showExport = true">📦 打包中… {{ exportPct }}%</button>
         <button v-else class="btn btn-primary btn-sm" @click="showExport = true">📦 下载内容包（{{ (exportJob.parts || []).length }} 包）</button>
@@ -363,6 +365,7 @@ const TasksView = {
                :href="'/api/export/' + exportJob.id + '/download/' + p.part" style="text-decoration:none">⬇ 第{{ p.part }}包（{{ p.tasks }}条 · {{ fmtSize(p.size) }}）</a>
           </div>
           <p class="muted">每 10 条打成一个 zip，逐包点击下载；下载进度由浏览器管理。内容包在服务器保留约 1 小时。</p>
+          <p class="muted">已导出的任务已自动移入「回收站」（任务中心不再显示），如导出的内容有问题可在回收站恢复。</p>
           <div style="text-align:right;margin-top:14px">
             <button class="btn btn-primary btn-sm" @click="exportJob = null; showExport = false">完成</button>
           </div>

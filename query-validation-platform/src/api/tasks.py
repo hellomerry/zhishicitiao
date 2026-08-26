@@ -415,7 +415,9 @@ async def _build_approved_zips(job: dict | None = None,
     part_size 非空时每 part_size 条任务分一个包；任务式导出（job 非空）分包落盘
     exports/，同步导出（job 为空）在内存出单包字节。
     job 非空时往里写进度（total/done/detail），供进度条轮询。
-    返回 (parts, 任务数)；part 含 part/tasks/size + file（落盘）或 bytes（内存）。
+    返回 (parts, 任务数, 任务 id 列表)；part 含 part/tasks/size + file（落盘）或 bytes（内存）。
+    任务 id 列表用于导出成功后自动移入回收站（只动打包时快照到的任务，
+    打包期间新通过的任务不受影响）。
     """
     import asyncio
     import re
@@ -525,7 +527,25 @@ async def _build_approved_zips(job: dict | None = None,
         if part_size and part_tasks >= part_size:
             await asyncio.to_thread(_flush)
     await asyncio.to_thread(_flush)
-    return parts, len(tasks)
+    return parts, len(tasks), task_ids
+
+
+async def _trash_exported_tasks(task_ids: list, actor: str) -> int:
+    """导出成功后把已打包任务自动移入回收站（软删除，可恢复/彻底删除）。
+    只动仍为 approved 的快照任务；返回移入条数。"""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    async with SessionLocal() as session:
+        rows = (await session.execute(
+            select(Task).where(Task.id.in_(task_ids),
+                               Task.status == "approved"))).scalars().all()
+        for t in rows:
+            t.prev_status = "approved"
+            t.status = "trashed"
+            t.trashed_at = now
+            t.trashed_by = actor
+        await session.commit()
+    return len(rows)
 
 
 @router.get("/api/tasks/export_approved")
@@ -535,9 +555,10 @@ async def export_approved(actor: str = "anonymous"):
     前端默认走任务式导出（/api/export/approved/start，带进度条 + 分包下载）。
     """
     from fastapi.responses import StreamingResponse
-    parts, n = await _build_approved_zips()
+    parts, n, task_ids = await _build_approved_zips()
+    moved = await _trash_exported_tasks(task_ids, actor)
     await log_action(actor, "export_approved",
-                     f"导出已通过内容包 ZIP（{n} 条任务）")
+                     f"导出已通过内容包 ZIP（{n} 条任务；{moved} 条已自动移入回收站）")
     return StreamingResponse(
         io.BytesIO(parts[0]["bytes"]), media_type="application/zip",
         headers={"Content-Disposition": "attachment; filename=approved_content.zip"})
@@ -557,14 +578,17 @@ def _sweep_export_jobs() -> None:
 async def _run_export_job(job_id: str, actor: str) -> None:
     job = _EXPORT_JOBS[job_id]
     try:
-        parts, n = await _build_approved_zips(job, part_size=_EXPORT_PART_SIZE)
+        parts, n, task_ids = await _build_approved_zips(job, part_size=_EXPORT_PART_SIZE)
         job["parts"] = [{"part": p["part"], "tasks": p["tasks"], "size": p["size"]}
                         for p in parts]
         job["files"] = [p["file"] for p in parts]
         job["status"] = "done"
-        job["detail"] = f"打包完成：{n} 条 / {len(parts)} 包，可逐包下载"
+        moved = await _trash_exported_tasks(task_ids, actor)
+        job["detail"] = (f"打包完成：{n} 条 / {len(parts)} 包，可逐包下载；"
+                         f"{moved} 条已导出任务已自动移入回收站")
         await log_action(actor, "export_approved",
-                         f"导出已通过内容包 ZIP（{n} 条任务 / {len(parts)} 包，任务式导出）")
+                         f"导出已通过内容包 ZIP（{n} 条任务 / {len(parts)} 包，任务式导出；"
+                         f"{moved} 条已自动移入回收站）")
     except Exception as e:  # noqa: BLE001
         job["status"] = "error"
         job["error"] = str(e)

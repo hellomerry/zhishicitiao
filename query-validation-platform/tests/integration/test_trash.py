@@ -1,4 +1,5 @@
-"""回收站：软删除/恢复/彻底删除 + 列表隐藏 + 权限。"""
+"""回收站：软删除/恢复/彻底删除 + 列表隐藏 + 权限 + 导出后自动入站。"""
+import asyncio
 import uuid
 
 import pytest
@@ -145,3 +146,45 @@ async def test_purge_admin_deletes_task_and_content():
     async with _client() as ac:
         r = await ac.get(f"/api/activity?actor={admin}&action=purge_task")
         assert r.json()["total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_export_approved_auto_trashes_exported_tasks():
+    """导出已通过内容包成功后，已打包任务自动移入回收站（可恢复）。"""
+    admin = await _make_user(role="admin")
+    t1 = await _make_task(status="approved")
+    t2 = await _make_task(status="approved")
+    keep = await _make_task(status="review")  # 未通过任务不受影响
+    async with SessionLocal() as s:
+        s.add(Draft(task_id=t1.id, version=1, body="正文1",
+                    model_version="m", prompt_version="p"))
+        s.add(Draft(task_id=t2.id, version=1, body="正文2",
+                    model_version="m", prompt_version="p"))
+        await s.commit()
+    async with _client() as ac:
+        r = await ac.post(f"/api/export/approved/start?actor={admin}")
+        assert r.status_code == 200 and r.json()["total"] == 2
+        job_id = r.json()["job_id"]
+        st = {}
+        for _ in range(50):
+            st = (await ac.get(f"/api/export/{job_id}")).json()
+            if st["status"] in ("done", "error"):
+                break
+            await asyncio.sleep(0.1)
+        assert st["status"] == "done", st
+        assert "回收站" in st["detail"]
+        # 已导出的两条进入回收站，prev_status=approved
+        r = await ac.get("/api/trash")
+        bin_items = {t["id"]: t for t in r.json()["items"]}
+        assert str(t1.id) in bin_items and str(t2.id) in bin_items
+        assert bin_items[str(t1.id)]["prev_status"] == "approved"
+        # 任务列表只剩未通过的那条
+        r = await ac.get("/api/tasks")
+        ids = [t["id"] for t in r.json()["items"]]
+        assert str(keep.id) in ids and str(t1.id) not in ids
+        # 已落盘的 zip 仍可下载（入站不影响下载窗口）
+        d = await ac.get(f"/api/export/{job_id}/download/1")
+        assert d.status_code == 200
+        # 恢复后回到 approved，重新出现在任务列表
+        r = await ac.post(f"/api/tasks/{t1.id}/restore?actor={admin}")
+        assert r.json()["status"] == "approved"
