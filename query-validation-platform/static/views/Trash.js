@@ -53,17 +53,15 @@ const TrashView = {
     },
     async purge(t) {
       if (!confirm(`确定彻底删除任务「${t.query}」？\n\n该任务及其全部生成内容（文案、配图、审核记录）将被永久清除，不可恢复！`)) return;
-      let actor = this.actorName;
+      // 非 admin：必须提供管理员密码，由 purge 端点服务端校验（错密码直接 403）
+      let url = `/api/tasks/${t.id}/purge?actor=` + encodeURIComponent(this.actorName);
       if (!this.isAdmin) {
         const pwd = prompt('彻底删除需要管理员权限，请输入管理员密码：');
         if (pwd === null) return;
-        try {
-          await api.post('/api/auth/verify_admin', { password: pwd });
-        } catch (e) { this.error = '管理员验证失败：' + e.message; return; }
-        actor = 'admin';
+        url += '&admin_password=' + encodeURIComponent(pwd);
       }
       try {
-        await api.del(`/api/tasks/${t.id}/purge?actor=` + encodeURIComponent(actor));
+        await api.del(url);
         await this.load();
       } catch (e) { this.error = e.message; }
     },

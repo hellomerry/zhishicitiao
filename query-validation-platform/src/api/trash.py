@@ -185,9 +185,12 @@ async def restore_batch(body: _BatchIds):
 
 
 @router.delete("/api/tasks/{task_id}/purge")
-async def purge_task(task_id: str, actor: str = "anonymous"):
-    """彻底删除（仅 admin）：清全部关联表 + tasks 行 + static/generated 磁盘文件。
-    不可恢复；activity_logs 保留。"""
+async def purge_task(task_id: str, actor: str = "anonymous", admin_password: str = ""):
+    """彻底删除：清全部关联表 + tasks 行 + static/generated 磁盘文件。不可恢复；
+    activity_logs 保留。
+    权限（不可逆操作，不止看 actor 角色）：actor 是在职 admin，或提供任一在职
+    admin 账号的正确密码（admin_password，与 verify_admin 同口径）。"""
+    from src.api.auth import hash_password
     from src.models.events import NodeEvent
     from src.models.review import (Approval, BatchMember, Issue, RejectMark,
                                    ReviewAction, ReviewSession)
@@ -195,7 +198,15 @@ async def purge_task(task_id: str, actor: str = "anonymous"):
     async with SessionLocal() as session:
         _, role = await _actor_role(session, actor)
         if role != "admin":
-            raise HTTPException(status_code=403, detail="仅管理员可彻底删除")
+            if not admin_password:
+                raise HTTPException(
+                    status_code=403, detail="彻底删除需要管理员密码（admin_password）")
+            ok = (await session.execute(
+                text("SELECT 1 FROM users "
+                     "WHERE role = 'admin' AND active AND password_hash = :p LIMIT 1"),
+                {"p": hash_password(admin_password)})).first()
+            if not ok:
+                raise HTTPException(status_code=403, detail="管理员密码错误")
         task = (await session.execute(
             select(Task).where(Task.id == tid))).scalar_one_or_none()
         if not task:

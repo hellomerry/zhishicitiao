@@ -253,3 +253,23 @@ async def test_trash_list_sorting():
         assert [t["query"] for t in r.json()["items"]] == [t2.query, t1.query]
         r = await ac.get("/api/trash?sort=bogus&order=sideways")   # 非法回退默认
         assert [t["query"] for t in r.json()["items"]] == [t2.query, t1.query]
+
+
+@pytest.mark.asyncio
+async def test_purge_non_admin_needs_real_admin_password():
+    """非 admin 彻底删除：无密码/错密码 403；正确的在职 admin 密码放行（服务端校验）。"""
+    await _make_user(role="admin", pw="admin-pass-1")
+    user = await _make_user()
+    task = await _make_task(status="rejected")
+    tid = str(task.id)
+    async with _client() as ac:
+        await ac.post(f"/api/tasks/{tid}/trash?actor={user}")
+        r = await ac.delete(f"/api/tasks/{tid}/purge?actor={user}")
+        assert r.status_code == 403
+        r = await ac.delete(f"/api/tasks/{tid}/purge?actor={user}&admin_password=wrong-pw")
+        assert r.status_code == 403
+        r = await ac.delete(f"/api/tasks/{tid}/purge?actor={user}&admin_password=admin-pass-1")
+        assert r.status_code == 200 and r.json()["ok"] is True
+    async with SessionLocal() as s:
+        assert (await s.execute(
+            select(func.count(Task.id)).where(Task.id == task.id))).scalar() == 0
