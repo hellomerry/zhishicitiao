@@ -15,6 +15,7 @@ router = APIRouter()
 
 @router.post("/api/tasks/import")
 async def import_tasks(file: UploadFile = File(...), actor: str = Form("anonymous")):
+    from src.services.ownership import find_user_id
     content = await file.read()
     text_content = content.decode("utf-8-sig")  # 兼容 Excel 导出的带 BOM CSV
     reader = csv.DictReader(io.StringIO(text_content))
@@ -22,6 +23,7 @@ async def import_tasks(file: UploadFile = File(...), actor: str = Form("anonymou
     errors = []
     enqueued = []
     async with SessionLocal() as session:
+        owner_id = await find_user_id(session, actor)  # 记录归属（2026-08-26 起按归属隔离）
         for row in reader:
             try:
                 query = (row.get("query") or "").strip()
@@ -44,6 +46,7 @@ async def import_tasks(file: UploadFile = File(...), actor: str = Form("anonymou
                     platform=platform or None,
                     mode=mode,
                     status="draft",
+                    created_by=owner_id,
                 )
                 session.add(task)
                 await session.flush()
@@ -69,9 +72,12 @@ class ImportQueriesIn(BaseModel):
 
 @router.post("/api/tasks/import_queries")
 async def import_queries(payload: ImportQueriesIn):
-    """批量导入 Query 文本，创建任务并加入队列（按并发限制排队执行）。"""
+    """批量导入 Query 文本，创建任务并加入队列（按并发限制排队执行）。
+    记录归属（created_by = actor 对应的在职用户，2026-08-26 起按归属隔离）。"""
+    from src.services.ownership import find_user_id
     imported = []
     async with SessionLocal() as session:
+        owner_id = await find_user_id(session, payload.actor)
         for q in payload.queries:
             q = q.strip()
             if not q:
@@ -83,7 +89,7 @@ async def import_queries(payload: ImportQueriesIn):
                 continue
             task = Task(idempotency_key=key, query=q,
                         content_type=payload.content_type, mode=payload.mode,
-                        status="draft")
+                        status="draft", created_by=owner_id)
             session.add(task)
             await session.flush()
             imported.append((task.id, q))
@@ -103,15 +109,19 @@ async def import_queries(payload: ImportQueriesIn):
 @router.get("/api/tasks")
 async def list_tasks(status: str | None = None, mode: str | None = None,
                      risk_level: str | None = None, limit: int = 20, offset: int = 0,
-                     sort: str = "created_at", order: str = "desc"):
+                     sort: str = "created_at", order: str = "desc",
+                     actor: str = ""):
     """任务列表：状态/模式/风险筛选 + 排序 + 分页，每项带当前节点与风险等级。
-    sort 白名单：created_at（默认 desc）/ status / mode；order: asc/desc。"""
+    sort 白名单：created_at（默认 desc）/ status / mode；order: asc/desc。
+    归属隔离（2026-08-26）：非 admin 只看到自己创建的任务；actor 必填。"""
     from src.models.events import NodeEvent
     from src.models.review import RiskClassification
+    from src.services.ownership import get_actor, owner_filter
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
     async with SessionLocal() as session:
-        filters = []
+        uid, role = await get_actor(session, actor)
+        filters = owner_filter(Task, uid, role)
         if status:
             filters.append(Task.status == status)
         else:
@@ -152,23 +162,27 @@ async def list_tasks(status: str | None = None, mode: str | None = None,
 
 
 @router.get("/api/tasks/{task_id}/detail")
-async def task_detail(task_id: str):
-    """任务详情：全字段 + 节点进度 + 正文/分页/图片/事实点/证据/风险 + 三方审核状态。"""
+async def task_detail(task_id: str, actor: str = ""):
+    """任务详情：全字段 + 节点进度 + 正文/分页/图片/事实点/证据/风险 + 三方审核状态。
+    归属隔离（2026-08-26）：非属主非 admin → 404；审核中的任务放行（与审核队列可见性一致）。"""
     from src.models.drafts import Draft, PageCopy
     from src.models.entities import Claim, Evidence
     from src.models.assets import Asset
     from src.models.events import NodeEvent
     from src.models.review import RiskClassification, ReviewSession, ReviewAction
     from src.api.review import REVIEW_ROLES
+    from src.services.ownership import check_owner, get_actor
     from datetime import datetime, timezone
     try:
         tid = uuid.UUID(task_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="invalid task_id")
     async with SessionLocal() as session:
+        uid, role = await get_actor(session, actor)
         task = (await session.execute(select(Task).where(Task.id == tid))).scalars().first()
         if not task:
             raise HTTPException(status_code=404, detail="task not found")
+        check_owner(task, uid, role, allow_review=True)
         events = (await session.execute(
             select(NodeEvent).where(NodeEvent.task_id == tid)
             .order_by(NodeEvent.enqueued_at))).scalars().all()
@@ -311,12 +325,20 @@ async def retry_task(task_id: str, actor: str = "anonymous"):
 
 
 @router.get("/api/tasks/stats")
-async def task_stats():
-    """任务状态统计 + 流水线进度（供进度页轮询）。"""
+async def task_stats(actor: str = ""):
+    """任务状态统计 + 流水线进度（供进度页轮询）。
+    归属隔离（2026-08-26）：传非 admin 的 actor 时，total/by_status 只统计其名下任务；
+    不传 actor 为全局口径（监控等内部调用）。"""
+    from src.services.ownership import get_actor, owner_filter
     async with SessionLocal() as session:
+        filters = []
+        if actor:
+            uid, role = await get_actor(session, actor)
+            filters = owner_filter(Task, uid, role)
         status_counts = dict((await session.execute(
-            select(Task.status, func.count(Task.id)).group_by(Task.status))).all())
-        total = await session.execute(select(func.count(Task.id)))
+            select(Task.status, func.count(Task.id)).where(*filters)
+            .group_by(Task.status))).all())
+        total = await session.execute(select(func.count(Task.id)).where(*filters))
         node_counts = dict((await session.execute(
             text("SELECT node_name, count(*) FROM node_events WHERE finished_at IS NOT NULL AND error_class IS NULL GROUP BY node_name"))).all())
         return {
@@ -415,12 +437,14 @@ _EXPORT_PART_SIZE = 10  # 每包最多任务数（逐包下载，避免单包过
 
 
 async def _build_approved_zips(job: dict | None = None,
-                               part_size: int | None = None) -> tuple[list[dict], int]:
+                               part_size: int | None = None,
+                               owner_id=None) -> tuple[list[dict], int, list]:
     """构建已通过内容包（正文 + 分页文案 + 配图统一 1152x1536）。
 
     part_size 非空时每 part_size 条任务分一个包；任务式导出（job 非空）分包落盘
     exports/，同步导出（job 为空）在内存出单包字节。
     job 非空时往里写进度（total/done/detail），供进度条轮询。
+    owner_id 非空时只打包该用户创建的任务（归属隔离，admin 传 None 导出全部）。
     返回 (parts, 任务数, 任务 id 列表)；part 含 part/tasks/size + file（落盘）或 bytes（内存）。
     任务 id 列表用于导出成功后自动移入回收站（只动打包时快照到的任务，
     打包期间新通过的任务不受影响）。
@@ -435,8 +459,11 @@ async def _build_approved_zips(job: dict | None = None,
 
     target_size = tuple(int(x) for x in settings.image_size.split("x"))
     async with SessionLocal() as session:
+        filters = [Task.status == "approved"]
+        if owner_id is not None:
+            filters.append(Task.created_by == owner_id)
         tasks = (await session.execute(
-            select(Task).where(Task.status == "approved")
+            select(Task).where(*filters)
             .order_by(Task.created_at))).scalars().all()
         if not tasks:
             raise HTTPException(
@@ -557,11 +584,16 @@ async def _trash_exported_tasks(task_ids: list, actor: str) -> int:
 @router.get("/api/tasks/export_approved")
 async def export_approved(actor: str = "anonymous"):
     """导出已通过（approved）任务的内容包 ZIP（同步单包版，小批量直接可用）。
+    归属隔离：非 admin 只导出自己创建的任务。
 
     前端默认走任务式导出（/api/export/approved/start，带进度条 + 分包下载）。
     """
     from fastapi.responses import StreamingResponse
-    parts, n, task_ids = await _build_approved_zips()
+    from src.services.ownership import get_actor
+    async with SessionLocal() as session:
+        uid, role = await get_actor(session, actor)
+    owner_id = None if role == "admin" else uid
+    parts, n, task_ids = await _build_approved_zips(owner_id=owner_id)
     moved = await _trash_exported_tasks(task_ids, actor)
     await log_action(actor, "export_approved",
                      f"导出已通过内容包 ZIP（{n} 条任务；{moved} 条已自动移入回收站）")
@@ -581,10 +613,11 @@ def _sweep_export_jobs() -> None:
             del _EXPORT_JOBS[jid]
 
 
-async def _run_export_job(job_id: str, actor: str) -> None:
+async def _run_export_job(job_id: str, actor: str, owner_id=None) -> None:
     job = _EXPORT_JOBS[job_id]
     try:
-        parts, n, task_ids = await _build_approved_zips(job, part_size=_EXPORT_PART_SIZE)
+        parts, n, task_ids = await _build_approved_zips(
+            job, part_size=_EXPORT_PART_SIZE, owner_id=owner_id)
         job["parts"] = [{"part": p["part"], "tasks": p["tasks"], "size": p["size"]}
                         for p in parts]
         job["files"] = [p["file"] for p in parts]
@@ -603,13 +636,17 @@ async def _run_export_job(job_id: str, actor: str) -> None:
 
 @router.post("/api/export/approved/start")
 async def start_approved_export(actor: str = "anonymous"):
-    """启动后台打包（每 10 条一包），返回 job_id；前端轮询进度后逐包下载。"""
+    """启动后台打包（每 10 条一包），返回 job_id；前端轮询进度后逐包下载。
+    归属隔离：非 admin 只打包自己创建的任务。"""
     import asyncio
     import time
+    from src.services.ownership import get_actor, owner_filter
     _sweep_export_jobs()
     async with SessionLocal() as session:
+        uid, role = await get_actor(session, actor)
         n = (await session.execute(
-            select(func.count(Task.id)).where(Task.status == "approved"))).scalar() or 0
+            select(func.count(Task.id))
+            .where(Task.status == "approved", *owner_filter(Task, uid, role)))).scalar() or 0
     if not n:
         raise HTTPException(
             status_code=404,
@@ -619,7 +656,8 @@ async def start_approved_export(actor: str = "anonymous"):
                             "detail": "启动打包…", "error": None,
                             "job_id": job_id, "files": [], "parts": [],
                             "created": time.time()}
-    asyncio.create_task(_run_export_job(job_id, actor))
+    asyncio.create_task(_run_export_job(
+        job_id, actor, owner_id=None if role == "admin" else uid))
     return {"job_id": job_id, "total": n}
 
 

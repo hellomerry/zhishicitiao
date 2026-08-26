@@ -24,7 +24,7 @@ const TrashView = {
     async load() {
       this.loading = true;
       try {
-        const r = await api.get(`/api/trash?limit=${this.size}&offset=${(this.page - 1) * this.size}&sort=${this.sort}&order=${this.order}`);
+        const r = await api.get(`/api/trash?limit=${this.size}&offset=${(this.page - 1) * this.size}&sort=${this.sort}&order=${this.order}&actor=` + encodeURIComponent(this.actorName));
         this.list = r.items; this.total = r.total; this.error = '';
         this.selected = {};
       } catch (e) { this.error = e.message; }

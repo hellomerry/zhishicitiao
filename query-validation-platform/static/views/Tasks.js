@@ -70,6 +70,7 @@ const TasksView = {
       if (this.fRisk) p.set('risk_level', this.fRisk);
       p.set('sort', this.sort);
       p.set('order', this.order);
+      p.set('actor', this.actorName);
       p.set('limit', '100');
       return p.toString();
     },
@@ -90,7 +91,7 @@ const TasksView = {
       try {
         const [r, s] = await Promise.all([
           api.get('/api/tasks?' + this.buildQuery()),
-          api.get('/api/tasks/stats'),
+          api.get('/api/tasks/stats?actor=' + encodeURIComponent(this.actorName)),
         ]);
         this.list = r.items; this.total = r.total; this.error = '';
         this.approvedCount = (s.by_status || {}).approved || 0;
@@ -107,7 +108,7 @@ const TasksView = {
     },
     async open(t) {
       this.detailError = ''; this.detail = null;
-      try { this.detail = await api.get(`/api/tasks/${t.id}/detail`); }
+      try { this.detail = await api.get(`/api/tasks/${t.id}/detail?actor=` + encodeURIComponent(this.actorName)); }
       catch (e) { this.detailError = e.message; }
     },
     close() { this.detail = null; },

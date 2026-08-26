@@ -45,7 +45,7 @@ const DashboardView = {
   methods: {
     async load() {
       try {
-        const [m, s] = await Promise.all([api.get('/api/dashboard/metrics'), api.get('/api/tasks/stats')]);
+        const [m, s] = await Promise.all([api.get('/api/dashboard/metrics'), api.get('/api/tasks/stats?actor=' + encodeURIComponent((getUser() || {}).name || ''))]);
         this.metrics = m; this.stats = s; this.error = '';
         this.updatedAt = new Date().toLocaleTimeString('zh-CN', { hour12: false });
       } catch (e) { this.error = e.message; }

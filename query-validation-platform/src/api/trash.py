@@ -18,6 +18,7 @@ from src.db.session import SessionLocal
 from src.models.tasks import Task
 from src.pipeline.nodes import GENERATED_DIR
 from src.services.activity import log_action
+from src.services.ownership import check_owner, get_actor, owner_filter
 from src.services.regen import clear_generated_content
 
 router = APIRouter()
@@ -26,13 +27,8 @@ _TRASHABLE = ("review", "approved", "rejected", "failed")
 
 
 async def _actor_role(session, actor: str):
-    """操作人鉴权：须为在职用户；返回 (uid, role)。与 prompts.py 的 _actor 同口径。"""
-    row = (await session.execute(
-        text("SELECT id, role FROM users WHERE name = :n AND active"),
-        {"n": actor})).first()
-    if not row:
-        raise HTTPException(status_code=401, detail=f"用户不存在: {actor}")
-    return row[0], row[1]
+    """操作人鉴权：须为在职用户；返回 (uid, role)。统一走 services/ownership。"""
+    return await get_actor(session, actor)
 
 
 def _row(t: Task) -> dict:
@@ -45,12 +41,15 @@ def _row(t: Task) -> dict:
 
 @router.get("/api/trash")
 async def list_trash(limit: int = 50, offset: int = 0,
-                     sort: str = "trashed_at", order: str = "desc"):
-    """回收站列表（所有登录用户可见），默认按移入时间倒序。
-    sort 白名单：trashed_at / prev_status / mode / trashed_by；order: asc/desc。"""
+                     sort: str = "trashed_at", order: str = "desc",
+                     actor: str = ""):
+    """回收站列表，默认按移入时间倒序。
+    sort 白名单：trashed_at / prev_status / mode / trashed_by；order: asc/desc。
+    归属隔离（2026-08-26）：非 admin 只看到自己任务的回收站；actor 必填。"""
     limit = max(1, min(limit, 200))
     async with SessionLocal() as session:
-        where = [Task.status == "trashed"]
+        uid, role = await get_actor(session, actor)
+        where = [Task.status == "trashed", *owner_filter(Task, uid, role)]
         total = (await session.execute(
             select(func.count(Task.id)).where(*where))).scalar() or 0
         sort_col = {"trashed_at": Task.trashed_at, "prev_status": Task.prev_status,
@@ -65,20 +64,21 @@ async def list_trash(limit: int = 50, offset: int = 0,
 
 @router.post("/api/tasks/{task_id}/trash")
 async def trash_task(task_id: str, actor: str = "anonymous"):
-    """移入回收站（软删除，可恢复）。仅终态任务可移入。"""
+    """移入回收站（软删除，可恢复）。仅终态任务可移入；非 admin 只能移入自己的任务。"""
     tid = uuid.UUID(task_id)
     async with SessionLocal() as session:
+        uid, role = await get_actor(session, actor)
         task = (await session.execute(
             select(Task).where(Task.id == tid))).scalar_one_or_none()
         if not task:
             raise HTTPException(status_code=404, detail="任务不存在")
+        check_owner(task, uid, role)
         if task.status == "trashed":
             return {"ok": True, "already": True}
         if task.status not in _TRASHABLE:
             raise HTTPException(
                 status_code=409,
                 detail=f"任务当前状态为「{task.status}」，排队/生成中的任务不能移入回收站")
-        await _actor_role(session, actor)
         prev = task.status
         query = task.query
         task.prev_status = prev
@@ -93,16 +93,17 @@ async def trash_task(task_id: str, actor: str = "anonymous"):
 
 @router.post("/api/tasks/{task_id}/restore")
 async def restore_task(task_id: str, actor: str = "anonymous"):
-    """从回收站恢复：状态还原为移入前的状态。"""
+    """从回收站恢复：状态还原为移入前的状态；非 admin 只能恢复自己的任务。"""
     tid = uuid.UUID(task_id)
     async with SessionLocal() as session:
+        uid, role = await get_actor(session, actor)
         task = (await session.execute(
             select(Task).where(Task.id == tid))).scalar_one_or_none()
         if not task:
             raise HTTPException(status_code=404, detail="任务不存在")
+        check_owner(task, uid, role)
         if task.status != "trashed":
             raise HTTPException(status_code=409, detail="任务不在回收站中")
-        await _actor_role(session, actor)
         restored = task.prev_status or "review"
         query = task.query
         task.status = restored
@@ -132,14 +133,16 @@ def _parse_ids(raw: list[str]) -> list[uuid.UUID]:
 
 @router.post("/api/tasks/trash_batch")
 async def trash_batch(body: _BatchIds):
-    """批量移入回收站：终态任务移入，排队/生成中/已入站的跳过。返回 {moved, skipped}。"""
+    """批量移入回收站：终态任务移入，排队/生成中/已入站的跳过。返回 {moved, skipped}。
+    归属隔离：非 admin 只处理自己创建的任务（他人的任务计入 skipped）。"""
     ids = _parse_ids(body.task_ids)
     if not ids:
         raise HTTPException(status_code=400, detail="task_ids 为空")
     async with SessionLocal() as session:
-        await _actor_role(session, body.actor)
+        uid, role = await get_actor(session, body.actor)
         tasks = (await session.execute(
-            select(Task).where(Task.id.in_(ids)))).scalars().all()
+            select(Task).where(Task.id.in_(ids),
+                               *owner_filter(Task, uid, role)))).scalars().all()
         now = datetime.now(timezone.utc)
         moved = 0
         for t in tasks:
@@ -159,14 +162,16 @@ async def trash_batch(body: _BatchIds):
 
 @router.post("/api/tasks/restore_batch")
 async def restore_batch(body: _BatchIds):
-    """批量恢复：仅在回收站中的任务还原为移入前状态。返回 {restored, skipped}。"""
+    """批量恢复：仅在回收站中的任务还原为移入前状态。返回 {restored, skipped}。
+    归属隔离：非 admin 只恢复自己创建的任务（他人的任务计入 skipped）。"""
     ids = _parse_ids(body.task_ids)
     if not ids:
         raise HTTPException(status_code=400, detail="task_ids 为空")
     async with SessionLocal() as session:
-        await _actor_role(session, body.actor)
+        uid, role = await get_actor(session, body.actor)
         tasks = (await session.execute(
-            select(Task).where(Task.id.in_(ids)),
+            select(Task).where(Task.id.in_(ids),
+                               *owner_filter(Task, uid, role)),
         )).scalars().all()
         restored = 0
         for t in tasks:

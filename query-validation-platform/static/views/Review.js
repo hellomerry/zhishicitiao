@@ -91,7 +91,7 @@ const ReviewView = {
       try {
         const [c, d] = await Promise.all([
           api.get(`/api/review/task/${t.task_id}`),
-          api.get(`/api/tasks/${t.task_id}/detail`),
+          api.get(`/api/tasks/${t.task_id}/detail?actor=` + encodeURIComponent((this.user || {}).name || '')),
         ]);
         this.current = c; this.detail = d;
       } catch (e) { this.error = e.message; }

@@ -41,6 +41,19 @@ def _client():
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
+async def _make_admin() -> str:
+    """建一个 admin 用户并返回用户名（归属隔离后，无归属的测试任务仅 admin 可见）。"""
+    from sqlalchemy import text as _text
+    from src.api.auth import hash_password
+    name = f"admin-{_uniq()}"
+    async with SessionLocal() as s:
+        await s.execute(_text(
+            "INSERT INTO users (name, role, password_hash) VALUES (:n, 'admin', :p)"),
+            {"n": name, "p": hash_password("pw-123456")})
+        await s.commit()
+    return name
+
+
 # ---------- 审核回写任务状态 ----------
 
 @pytest.mark.asyncio
@@ -103,26 +116,28 @@ async def test_list_tasks_filter_and_pagination():
     async with SessionLocal() as s:
         s.add(RiskClassification(task_id=t1.id, level="red", reasons=["r"]))
         await s.commit()
+    admin = await _make_admin()
+    pa = {"actor": admin}
     async with _client() as ac:
-        all_resp = (await ac.get("/api/tasks")).json()
+        all_resp = (await ac.get("/api/tasks", params=pa)).json()
         assert all_resp["total"] == 3
         assert len(all_resp["items"]) == 3
         item = all_resp["items"][0]
         assert {"id", "query", "mode", "status", "risk_level", "current_node", "created_at"} <= set(item)
 
-        by_status = (await ac.get("/api/tasks", params={"status": "review"})).json()
+        by_status = (await ac.get("/api/tasks", params={"status": "review", **pa})).json()
         assert by_status["total"] == 2
         assert all(i["status"] == "review" for i in by_status["items"])
 
-        by_mode = (await ac.get("/api/tasks", params={"mode": "single"})).json()
+        by_mode = (await ac.get("/api/tasks", params={"mode": "single", **pa})).json()
         assert by_mode["total"] == 1
 
-        by_risk = (await ac.get("/api/tasks", params={"risk_level": "red"})).json()
+        by_risk = (await ac.get("/api/tasks", params={"risk_level": "red", **pa})).json()
         assert by_risk["total"] == 1
         assert by_risk["items"][0]["id"] == str(t1.id)
         assert by_risk["items"][0]["risk_level"] == "red"
 
-        page = (await ac.get("/api/tasks", params={"limit": 2, "offset": 2})).json()
+        page = (await ac.get("/api/tasks", params={"limit": 2, "offset": 2, **pa})).json()
         assert page["total"] == 3
         assert len(page["items"]) == 1
 
@@ -154,8 +169,9 @@ async def test_task_detail_includes_node_progress():
         s.add(RiskClassification(task_id=task.id, level="green", reasons=[]))
         s.add(ReviewSession(task_id=task.id, role="A"))
         await s.commit()
+    admin = await _make_admin()
     async with _client() as ac:
-        resp = await ac.get(f"/api/tasks/{tid}/detail")
+        resp = await ac.get(f"/api/tasks/{tid}/detail", params={"actor": admin})
     assert resp.status_code == 200
     data = resp.json()
     assert data["task"]["id"] == tid
@@ -177,8 +193,9 @@ async def test_task_detail_includes_node_progress():
 
 @pytest.mark.asyncio
 async def test_task_detail_404():
+    admin = await _make_admin()
     async with _client() as ac:
-        resp = await ac.get(f"/api/tasks/{uuid.uuid4()}/detail")
+        resp = await ac.get(f"/api/tasks/{uuid.uuid4()}/detail", params={"actor": admin})
     assert resp.status_code == 404
 
 
@@ -269,10 +286,11 @@ async def test_export_approved_zip():
     Image.new("RGB", (100, 100), (255, 0, 0)).save(src, format="PNG")
     small_png = src.getvalue()
 
+    admin = await _make_admin()
     with patch("src.gateway.ocr.fetch_image_bytes",
                new=AsyncMock(return_value=(small_png, "image/png"))):
         async with _client() as client:
-            resp = await client.get("/api/tasks/export_approved")
+            resp = await client.get("/api/tasks/export_approved", params={"actor": admin})
     assert resp.status_code == 200
     zf = zipfile.ZipFile(io.BytesIO(resp.content))
     names = zf.namelist()
@@ -286,8 +304,9 @@ async def test_export_approved_zip():
 
 @pytest.mark.asyncio
 async def test_export_approved_empty_404():
+    admin = await _make_admin()
     async with _client() as client:
-        resp = await client.get("/api/tasks/export_approved")
+        resp = await client.get("/api/tasks/export_approved", params={"actor": admin})
     assert resp.status_code in (200, 404)   # 视是否已有 approved 任务
 
 
@@ -305,8 +324,9 @@ async def test_export_job_flow_with_progress():
         session.add(PageCopy(task_id=task.id, page_index=1, body="第一页", claim_ids=[]))
         await session.commit()
 
+    admin = await _make_admin()
     async with _client() as client:
-        r = await client.post("/api/export/approved/start?actor=tester")
+        r = await client.post(f"/api/export/approved/start?actor={admin}")
         assert r.status_code == 200
         job_id = r.json()["job_id"]
         assert r.json()["total"] == 1
@@ -344,8 +364,9 @@ async def test_export_job_splits_every_10_tasks():
                               model_version="m", prompt_version="p"))
         await session.commit()
 
+    admin = await _make_admin()
     async with _client() as client:
-        r = await client.post("/api/export/approved/start?actor=tester")
+        r = await client.post(f"/api/export/approved/start?actor={admin}")
         job_id = r.json()["job_id"]
         assert r.json()["total"] == 11
         s = {}
@@ -370,9 +391,12 @@ async def test_export_job_splits_every_10_tasks():
 
 @pytest.mark.asyncio
 async def test_export_job_start_empty_404():
+    admin = await _make_admin()
     async with _client() as client:
-        r = await client.post("/api/export/approved/start")
-    assert r.status_code == 404
+        r = await client.post("/api/export/approved/start")  # 无 actor → 401
+        assert r.status_code == 401
+        r = await client.post(f"/api/export/approved/start?actor={admin}")
+        assert r.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -391,14 +415,15 @@ async def test_list_tasks_sorting():
         s.add(_t("q-mid", "general", "approved", 1))
         s.add(_t("q-new", "compare", "failed", 2))
         await s.commit()
+    admin = await _make_admin()
     async with _client() as ac:
-        r = await ac.get("/api/tasks")  # 默认创建时间倒序
+        r = await ac.get(f"/api/tasks?actor={admin}")  # 默认创建时间倒序
         assert [t["query"] for t in r.json()["items"]] == ["q-new", "q-mid", "q-old"]
-        r = await ac.get("/api/tasks?sort=created_at&order=asc")
+        r = await ac.get(f"/api/tasks?sort=created_at&order=asc&actor={admin}")
         assert [t["query"] for t in r.json()["items"]] == ["q-old", "q-mid", "q-new"]
-        r = await ac.get("/api/tasks?sort=mode&order=asc")  # compare < general < single
+        r = await ac.get(f"/api/tasks?sort=mode&order=asc&actor={admin}")  # compare < general < single
         assert [t["query"] for t in r.json()["items"]] == ["q-new", "q-mid", "q-old"]
-        r = await ac.get("/api/tasks?sort=status&order=desc")  # review > failed > approved
+        r = await ac.get(f"/api/tasks?sort=status&order=desc&actor={admin}")  # review > failed > approved
         assert [t["query"] for t in r.json()["items"]] == ["q-old", "q-new", "q-mid"]
-        r = await ac.get("/api/tasks?sort=bogus&order=sideways")  # 非法参数回退默认
+        r = await ac.get(f"/api/tasks?sort=bogus&order=sideways&actor={admin}")  # 非法参数回退默认
         assert [t["query"] for t in r.json()["items"]] == ["q-new", "q-mid", "q-old"]
