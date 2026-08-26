@@ -127,6 +127,8 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary); b
 /* 表格 */
 .table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .table th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.table th.th-sort { cursor: pointer; user-select: none; white-space: nowrap; }
+.table th.th-sort:hover { color: var(--text, #333); }
 .table td { padding: 10px; border-bottom: 1px solid var(--border); }
 .table tbody tr { cursor: pointer; }
 .table tbody tr:hover { background: #f8f9fb; }

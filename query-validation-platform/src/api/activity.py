@@ -16,8 +16,9 @@ def _row(a: ActivityLog) -> dict:
 
 @router.get("/api/activity")
 async def list_activity(actor: str, user: str | None = None, action: str | None = None,
-                        limit: int = 50, offset: int = 0):
-    """日志列表：普通用户强制只看自己；admin 可用 user 参数看任意用户或全部。"""
+                        limit: int = 50, offset: int = 0, order: str = "desc"):
+    """日志列表：普通用户强制只看自己；admin 可用 user 参数看任意用户或全部。
+    order: desc（默认，最新在前）/ asc。"""
     if not actor:
         raise HTTPException(status_code=401, detail="缺少 actor 参数")
     async with SessionLocal() as session:
@@ -29,7 +30,9 @@ async def list_activity(actor: str, user: str | None = None, action: str | None 
         # 权限收敛：非 admin 只能看自己；admin 指定 user 则过滤，否则全部
         target = actor if not is_admin else (user or None)
 
-        stmt = select(ActivityLog).order_by(ActivityLog.created_at.desc())
+        order_col = (ActivityLog.created_at.asc() if order == "asc"
+                     else ActivityLog.created_at.desc())
+        stmt = select(ActivityLog).order_by(order_col)
         cnt = select(func.count(ActivityLog.id))
         if target:
             stmt = stmt.where(ActivityLog.actor_name == target)

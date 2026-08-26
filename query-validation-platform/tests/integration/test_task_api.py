@@ -373,3 +373,32 @@ async def test_export_job_start_empty_404():
     async with _client() as client:
         r = await client.post("/api/export/approved/start")
     assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_list_tasks_sorting():
+    """任务列表排序：sort 白名单 created_at/status/mode + order asc/desc，非法 sort 回退默认。"""
+    from datetime import timedelta
+    base = datetime(2026, 8, 20, tzinfo=timezone.utc)
+
+    def _t(query, mode, status, days):
+        return Task(idempotency_key=f"k-{_uniq()}", query=query,
+                    content_type="generic", mode=mode, status=status,
+                    created_at=base + timedelta(days=days))
+
+    async with SessionLocal() as s:
+        s.add(_t("q-old", "single", "review", 0))
+        s.add(_t("q-mid", "general", "approved", 1))
+        s.add(_t("q-new", "compare", "failed", 2))
+        await s.commit()
+    async with _client() as ac:
+        r = await ac.get("/api/tasks")  # 默认创建时间倒序
+        assert [t["query"] for t in r.json()["items"]] == ["q-new", "q-mid", "q-old"]
+        r = await ac.get("/api/tasks?sort=created_at&order=asc")
+        assert [t["query"] for t in r.json()["items"]] == ["q-old", "q-mid", "q-new"]
+        r = await ac.get("/api/tasks?sort=mode&order=asc")  # compare < general < single
+        assert [t["query"] for t in r.json()["items"]] == ["q-new", "q-mid", "q-old"]
+        r = await ac.get("/api/tasks?sort=status&order=desc")  # review > failed > approved
+        assert [t["query"] for t in r.json()["items"]] == ["q-old", "q-new", "q-mid"]
+        r = await ac.get("/api/tasks?sort=bogus&order=sideways")  # 非法参数回退默认
+        assert [t["query"] for t in r.json()["items"]] == ["q-new", "q-mid", "q-old"]

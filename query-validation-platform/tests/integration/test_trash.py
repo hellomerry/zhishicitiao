@@ -233,3 +233,23 @@ async def test_batch_requires_valid_actor_and_nonempty_ids():
         r = await ac.post("/api/tasks/trash_batch",
                           json={"task_ids": ["not-a-uuid"], "actor": user})
         assert r.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_trash_list_sorting():
+    """回收站列表排序：sort 白名单 trashed_at/prev_status/mode/trashed_by + order，非法回退默认。"""
+    user = await _make_user()
+    t1 = await _make_task(status="review", query=f"q-a-{_uniq()}")   # mode=general
+    t2 = await _make_task(status="failed", query=f"q-b-{_uniq()}")
+    async with _client() as ac:
+        # t1 先入站，t2 后入站（trashed_at 有先后）
+        await ac.post(f"/api/tasks/{t1.id}/trash?actor={user}")
+        await ac.post(f"/api/tasks/{t2.id}/trash?actor={user}")
+        r = await ac.get("/api/trash")  # 默认移入时间倒序
+        assert [t["query"] for t in r.json()["items"]] == [t2.query, t1.query]
+        r = await ac.get("/api/trash?sort=trashed_at&order=asc")
+        assert [t["query"] for t in r.json()["items"]] == [t1.query, t2.query]
+        r = await ac.get("/api/trash?sort=prev_status&order=asc")  # failed < review
+        assert [t["query"] for t in r.json()["items"]] == [t2.query, t1.query]
+        r = await ac.get("/api/trash?sort=bogus&order=sideways")   # 非法回退默认
+        assert [t["query"] for t in r.json()["items"]] == [t2.query, t1.query]

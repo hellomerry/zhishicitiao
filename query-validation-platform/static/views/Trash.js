@@ -5,6 +5,7 @@ const TrashView = {
       list: [], total: 0, error: '', loading: false,
       page: 1, size: 20,
       selected: {},           // 勾选的任务 id -> true（批量恢复）
+      sort: 'trashed_at', order: 'desc',  // 服务端排序（白名单：trashed_at/prev_status/mode/trashed_by）
     };
   },
   computed: {
@@ -23,11 +24,25 @@ const TrashView = {
     async load() {
       this.loading = true;
       try {
-        const r = await api.get(`/api/trash?limit=${this.size}&offset=${(this.page - 1) * this.size}`);
+        const r = await api.get(`/api/trash?limit=${this.size}&offset=${(this.page - 1) * this.size}&sort=${this.sort}&order=${this.order}`);
         this.list = r.items; this.total = r.total; this.error = '';
         this.selected = {};
       } catch (e) { this.error = e.message; }
       finally { this.loading = false; }
+    },
+    sortBy(col) {
+      if (this.sort === col) {
+        this.order = this.order === 'asc' ? 'desc' : 'asc';
+      } else {
+        this.sort = col;
+        this.order = col === 'trashed_at' ? 'desc' : 'asc';
+      }
+      this.page = 1;
+      this.load();
+    },
+    sortMark(col) {
+      if (this.sort !== col) return '';
+      return this.order === 'asc' ? ' ▲' : ' ▼';
     },
     async restore(t) {
       if (!confirm(`确定恢复任务「${t.query}」？\n\n任务将回到移入前的状态（${this.statusTag(t.prev_status).label}），重新出现在任务中心。`)) return;
@@ -82,7 +97,7 @@ const TrashView = {
       </div>
       <div v-if="!list.length && !loading" class="empty">回收站是空的</div>
       <table v-else class="table">
-        <thead><tr><th style="width:32px"><input type="checkbox" style="width:auto" :checked="allSelected" @change="toggleSelAll" title="全选本页"></th><th>Query</th><th>模式</th><th>移入前状态</th><th>操作人</th><th>移入时间</th><th style="width:170px">操作</th></tr></thead>
+        <thead><tr><th style="width:32px"><input type="checkbox" style="width:auto" :checked="allSelected" @change="toggleSelAll" title="全选本页"></th><th>Query</th><th class="th-sort" @click="sortBy('mode')">模式{{ sortMark('mode') }}</th><th class="th-sort" @click="sortBy('prev_status')">移入前状态{{ sortMark('prev_status') }}</th><th class="th-sort" @click="sortBy('trashed_by')">操作人{{ sortMark('trashed_by') }}</th><th class="th-sort" @click="sortBy('trashed_at')">移入时间{{ sortMark('trashed_at') }}</th><th style="width:170px">操作</th></tr></thead>
         <tbody>
           <tr v-for="t in list" :key="t.id">
             <td><input type="checkbox" style="width:auto" v-model="selected[t.id]"></td>

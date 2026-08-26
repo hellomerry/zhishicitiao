@@ -7,6 +7,7 @@ const MonitorView = {
       counts: {}, limiter: {}, tasks: [], events: [],
       connected: false, es: null, nodes: [],
       debugOn: false, showPw: false, pw: '', pwError: '', pwLoading: false,
+      mSort: 'default',     // 任务卡片排序：default（状态优先）/query/ node（当前节点）
     };
   },
   computed: {
@@ -22,7 +23,12 @@ const MonitorView = {
       const rank = { processing: 0, queued: 1, failed: 2, done: 3 };
       return [...this.tasks].sort((a, b) => (rank[a.status] ?? 9) - (rank[b.status] ?? 9));
     },
-    shownTasks() { return this.debugOn ? this.debugTasks : this.activeTasks; },
+    shownTasks() {
+      const rows = this.debugOn ? this.debugTasks : this.activeTasks;
+      if (this.mSort === 'query') return sortRows(rows, 'query', 'asc');
+      if (this.mSort === 'node') return sortRows(rows, 'current_node', 'asc');
+      return rows;
+    },
   },
   methods: {
     nodeLabel(name) { return this.nodeLabels[name] || name || '-'; },
@@ -151,7 +157,12 @@ const MonitorView = {
           <span class="live-dot" :class="{off: !connected}"></span>
           <span class="muted" style="font-size:12px">{{ connected ? 'SSE 已连接' : '连接断开，重连中…' }}</span>
         </h2>
-        <span style="margin-left:auto;display:flex;gap:8px">
+        <span style="margin-left:auto;display:flex;gap:8px;align-items:center">
+          <select v-model="mSort" style="width:auto">
+            <option value="default">默认排序（状态优先）</option>
+            <option value="query">按 Query</option>
+            <option value="node">按当前节点</option>
+          </select>
           <button class="btn btn-sm" :class="debugOn ? 'btn-danger' : 'btn-outline'" @click="askDebug">
             {{ debugOn ? '关闭 Debug' : 'Debug' }}
           </button>

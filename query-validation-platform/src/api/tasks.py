@@ -102,8 +102,10 @@ async def import_queries(payload: ImportQueriesIn):
 
 @router.get("/api/tasks")
 async def list_tasks(status: str | None = None, mode: str | None = None,
-                     risk_level: str | None = None, limit: int = 20, offset: int = 0):
-    """任务列表：状态/模式/风险筛选 + 分页，每项带当前节点与风险等级。"""
+                     risk_level: str | None = None, limit: int = 20, offset: int = 0,
+                     sort: str = "created_at", order: str = "desc"):
+    """任务列表：状态/模式/风险筛选 + 排序 + 分页，每项带当前节点与风险等级。
+    sort 白名单：created_at（默认 desc）/ status / mode；order: asc/desc。"""
     from src.models.events import NodeEvent
     from src.models.review import RiskClassification
     limit = max(1, min(limit, 200))
@@ -122,9 +124,13 @@ async def list_tasks(status: str | None = None, mode: str | None = None,
                 select(RiskClassification.task_id).where(RiskClassification.level == risk_level)))
         total = (await session.execute(
             select(func.count(Task.id)).where(*filters))).scalar() or 0
+        sort_col = {"created_at": Task.created_at, "status": Task.status,
+                    "mode": Task.mode}.get(sort, Task.created_at)
+        order_by = sort_col.asc() if order == "asc" else sort_col.desc()
         tasks = (await session.execute(
             select(Task).where(*filters)
-            .order_by(Task.created_at.desc()).limit(limit).offset(offset))).scalars().all()
+            .order_by(order_by, Task.created_at.desc())
+            .limit(limit).offset(offset))).scalars().all()
         items = []
         for t in tasks:
             current = (await session.execute(

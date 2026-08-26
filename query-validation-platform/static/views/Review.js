@@ -11,12 +11,23 @@ const ReviewView = {
       showReject: false, rejectReason: '', acting: false,
       marks: {},            // 定点驳回标记 {"page:2": {item_type, page_index, reason}}
       zoom: null,           // 图片放大浏览 {src, title, text}
+      qSort: 'default',     // 待审队列排序：default（后端顺序）/created（最新优先）/risk（风险优先）/mode
     };
   },
   computed: {
     user() { return getUser(); },
     role() { return this.user ? this.user.role : ''; },
     isReviewer() { return ['A', 'B', 'C'].includes(this.role); },
+    sortedQueue() {
+      const q = this.queue;
+      if (this.qSort === 'created') return sortRows(q, 'created_at', 'desc');
+      if (this.qSort === 'risk') {
+        const rank = { red: 0, yellow: 1, green: 2 };
+        return [...q].sort((a, b) => (rank[a.risk_level] ?? 3) - (rank[b.risk_level] ?? 3));
+      }
+      if (this.qSort === 'mode') return sortRows(q, 'mode', 'asc');
+      return q;
+    },
     marksList() { return Object.values(this.marks).sort((a, b) => a.page_index - b.page_index); },
     timerText() {
       const m = String(Math.floor(this.seconds / 60)).padStart(2, '0');
@@ -141,8 +152,14 @@ const ReviewView = {
       <div class="review-layout">
         <div class="card review-queue">
           <h2>待审队列 · {{ role }}（{{ roleName(role) }}）<button class="btn btn-outline btn-sm" style="float:right" @click="loadQueue">刷新</button></h2>
+          <select v-model="qSort" style="width:auto;margin-bottom:8px">
+            <option value="default">默认顺序</option>
+            <option value="created">最新优先</option>
+            <option value="risk">风险优先（红→绿）</option>
+            <option value="mode">按模式</option>
+          </select>
           <div v-if="!queue.length" class="empty">暂无待审任务</div>
-          <div v-for="t in queue" :key="t.task_id" class="queue-item" :class="{on: currentId === t.task_id}" @click="select(t)">
+          <div v-for="t in sortedQueue" :key="t.task_id" class="queue-item" :class="{on: currentId === t.task_id}" @click="select(t)">
             <div class="q">{{ t.query }}</div>
             <div>
               <span class="tag tag-blue">{{ modeLabel(t.mode) }}</span>

@@ -2,10 +2,23 @@
 const AdminView = {
   data() {
     return { st: null, error: '', msg: '', timer: null, logs: [], showLogs: false,
-             costs: null, costTask: null };
+             costs: null, costTask: null,
+             // 成本表排序（三个表各自独立，点击表头切换）
+             nodeSort: { key: 'cost', order: 'desc' },
+             modelSort: { key: 'cost', order: 'desc' },
+             taskSort: { key: 'total', order: 'desc' } };
   },
   computed: {
     isAdmin() { const u = getUser(); return u && u.role === 'admin'; },
+    sortedByNode() {
+      return this.costs ? sortRows(this.costs.by_node, this.nodeSort.key, this.nodeSort.order) : [];
+    },
+    sortedByModel() {
+      return this.costs ? sortRows(this.costs.by_model, this.modelSort.key, this.modelSort.order) : [];
+    },
+    sortedCostTasks() {
+      return this.costs ? sortRows(this.costs.tasks, this.taskSort.key, this.taskSort.order) : [];
+    },
     cycleText() {
       const c = this.st && this.st.cycle;
       if (!c) return '-';
@@ -54,6 +67,15 @@ const AdminView = {
       catch (e) { this.error = e.message; }
     },
     toggleCostTask(id) { this.costTask = this.costTask === id ? null : id; },
+    toggleCostSort(stateName, key) {
+      const s = this[stateName];
+      if (s.key === key) s.order = s.order === 'asc' ? 'desc' : 'asc';
+      else { s.key = key; s.order = 'desc'; }
+    },
+    costSortMark(stateName, key) {
+      const s = this[stateName];
+      return s.key === key ? (s.order === 'asc' ? ' ▲' : ' ▼') : '';
+    },
     fmtTime(s) { return s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '-'; },
     fmtMoney(v) { return '¥' + Number(v || 0).toFixed(4); },
     costModeLabel(m) { return (typeof MODE !== 'undefined' && MODE[m]) ? MODE[m].label : (m || '-'); },
@@ -118,8 +140,8 @@ const AdminView = {
           <div>
             <h3>按环节汇总</h3>
             <table class="table">
-              <thead><tr><th>环节</th><th>计费次数</th><th>费用</th><th>占比</th></tr></thead>
-              <tbody><tr v-for="n in costs.by_node" :key="n.node">
+              <thead><tr><th class="th-sort" @click="toggleCostSort('nodeSort','label')">环节{{ costSortMark('nodeSort','label') }}</th><th class="th-sort" @click="toggleCostSort('nodeSort','count')">计费次数{{ costSortMark('nodeSort','count') }}</th><th class="th-sort" @click="toggleCostSort('nodeSort','cost')">费用{{ costSortMark('nodeSort','cost') }}</th><th>占比</th></tr></thead>
+              <tbody><tr v-for="n in sortedByNode" :key="n.node">
                 <td>{{ n.label }}</td><td>{{ n.count }}</td><td>{{ fmtMoney(n.cost) }}</td>
                 <td>{{ costs.summary.total_cny ? Math.round(n.cost / costs.summary.total_cny * 100) : 0 }}%</td>
               </tr></tbody>
@@ -128,8 +150,8 @@ const AdminView = {
           <div>
             <h3>按模型汇总</h3>
             <table class="table">
-              <thead><tr><th>模型</th><th>费用</th><th>占比</th></tr></thead>
-              <tbody><tr v-for="m in costs.by_model" :key="m.model">
+              <thead><tr><th class="th-sort" @click="toggleCostSort('modelSort','model')">模型{{ costSortMark('modelSort','model') }}</th><th class="th-sort" @click="toggleCostSort('modelSort','cost')">费用{{ costSortMark('modelSort','cost') }}</th><th>占比</th></tr></thead>
+              <tbody><tr v-for="m in sortedByModel" :key="m.model">
                 <td class="muted">{{ m.model }}</td><td>{{ fmtMoney(m.cost) }}</td>
                 <td>{{ costs.summary.total_cny ? Math.round(m.cost / costs.summary.total_cny * 100) : 0 }}%</td>
               </tr></tbody>
@@ -140,9 +162,9 @@ const AdminView = {
         <div v-if="!costs.tasks.length" class="empty">暂无计费记录</div>
         <template v-else>
           <table class="table" style="margin-bottom:0">
-            <thead><tr><th>Query</th><th>模式</th><th>状态</th><th>总费用</th><th></th></tr></thead>
+            <thead><tr><th>Query</th><th class="th-sort" @click="toggleCostSort('taskSort','mode')">模式{{ costSortMark('taskSort','mode') }}</th><th class="th-sort" @click="toggleCostSort('taskSort','status')">状态{{ costSortMark('taskSort','status') }}</th><th class="th-sort" @click="toggleCostSort('taskSort','total')">总费用{{ costSortMark('taskSort','total') }}</th><th></th></tr></thead>
           </table>
-          <div v-for="t in costs.tasks" :key="t.task_id">
+          <div v-for="t in sortedCostTasks" :key="t.task_id">
             <table class="table" style="margin-bottom:0">
               <tbody>
                 <tr @click="toggleCostTask(t.task_id)" style="cursor:pointer">

@@ -6,14 +6,28 @@ const UsersView = {
       create: { name: '', password: '', role: 'A' },
       edit: null,   // {id, name, role, active, password}
       roles: ['A', 'B', 'C', 'admin'],
+      sort: 'created_at', order: 'asc',   // 客户端排序（点击表头切换）
     };
   },
   computed: {
     user() { return getUser(); },
     isAdmin() { const u = getUser(); return u && u.role === 'admin'; },
+    sortedUsers() { return sortRows(this.users, this.sort, this.order); },
   },
   methods: {
     fmtTime, roleName,
+    sortBy(col) {
+      if (this.sort === col) {
+        this.order = this.order === 'asc' ? 'desc' : 'asc';
+      } else {
+        this.sort = col;
+        this.order = 'asc';
+      }
+    },
+    sortMark(col) {
+      if (this.sort !== col) return '';
+      return this.order === 'asc' ? ' ▲' : ' ▼';
+    },
     async load() {
       this.error = '';
       try {
@@ -75,9 +89,9 @@ const UsersView = {
       <div class="card">
         <h2>用户列表（{{ users.length }}）</h2>
         <table class="table">
-          <thead><tr><th>用户名</th><th>角色</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
+          <thead><tr><th class="th-sort" @click="sortBy('name')">用户名{{ sortMark('name') }}</th><th class="th-sort" @click="sortBy('role')">角色{{ sortMark('role') }}</th><th class="th-sort" @click="sortBy('active')">状态{{ sortMark('active') }}</th><th class="th-sort" @click="sortBy('created_at')">创建时间{{ sortMark('created_at') }}</th><th>操作</th></tr></thead>
           <tbody>
-            <tr v-for="u in users" :key="u.id">
+            <tr v-for="u in sortedUsers" :key="u.id">
               <template v-if="edit && edit.id === u.id">
                 <td><input v-model="edit.name"></td>
                 <td><select v-model="edit.role">

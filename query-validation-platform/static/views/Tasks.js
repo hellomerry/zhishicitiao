@@ -5,6 +5,7 @@ const TasksView = {
       list: [], total: 0, error: '', loading: false,
       approvedCount: 0,      // 审核通过的任务数（>0 才可导出内容包）
       fStatus: '', fMode: '', fRisk: '', auto: true,
+      sort: 'created_at', order: 'desc',   // 列表排序（sort 白名单：created_at/status/mode）
       nodes: [], timer: null, es: null, sseTimer: null,
       live: {},              // task_id -> 内存实时态（current_node/debug/imgs）
       detail: null, detailError: '', retrying: false,
@@ -67,8 +68,23 @@ const TasksView = {
       if (this.fStatus) p.set('status', this.fStatus);
       if (this.fMode) p.set('mode', this.fMode);
       if (this.fRisk) p.set('risk_level', this.fRisk);
+      p.set('sort', this.sort);
+      p.set('order', this.order);
       p.set('limit', '100');
       return p.toString();
+    },
+    sortBy(col) {
+      if (this.sort === col) {
+        this.order = this.order === 'asc' ? 'desc' : 'asc';
+      } else {
+        this.sort = col;
+        this.order = col === 'created_at' ? 'desc' : 'asc';
+      }
+      this.load();
+    },
+    sortMark(col) {
+      if (this.sort !== col) return '';
+      return this.order === 'asc' ? ' ▲' : ' ▼';
     },
     async load() {
       try {
@@ -259,7 +275,7 @@ const TasksView = {
     <div class="card">
       <div v-if="!list.length" class="empty">暂无任务，<router-link to="/import">去导入 →</router-link></div>
       <table v-else class="table">
-        <thead><tr><th style="width:32px"><input type="checkbox" style="width:auto" :checked="allTrashableSelected" @change="toggleSelAll" title="全选可移入回收站的任务"></th><th>Query</th><th>模式</th><th>状态</th><th>风险</th><th>当前节点</th><th>创建时间</th></tr></thead>
+        <thead><tr><th style="width:32px"><input type="checkbox" style="width:auto" :checked="allTrashableSelected" @change="toggleSelAll" title="全选可移入回收站的任务"></th><th>Query</th><th class="th-sort" @click="sortBy('mode')">模式{{ sortMark('mode') }}</th><th class="th-sort" @click="sortBy('status')">状态{{ sortMark('status') }}</th><th>风险</th><th>当前节点</th><th class="th-sort" @click="sortBy('created_at')">创建时间{{ sortMark('created_at') }}</th></tr></thead>
         <tbody>
           <tr v-for="t in list" :key="t.id" @click="open(t)" :class="{selected: detailTask && detailTask.id === t.id}">
             <td @click.stop><input v-if="trashableRow(t)" type="checkbox" style="width:auto" v-model="selected[t.id]"></td>

@@ -82,3 +82,18 @@ async def test_action_filter_and_admin_ops_logged():
         # 动作过滤器不影响其它动作
         r = await ac.get(f"/api/activity?actor={admin}&action=login")
         assert all(l["action"] == "login" for l in r.json()["logs"])
+
+
+@pytest.mark.asyncio
+async def test_activity_order_param():
+    """工作日志 order=asc/desc（默认 desc 最新在前）。"""
+    name = await _make_user()
+    async with _client() as ac:
+        await ac.post("/api/auth/login", json={"username": name, "password": "wrong"})
+        await ac.post("/api/auth/login", json={"username": name, "password": "pw-123456"})
+        r = await ac.get(f"/api/activity?actor={name}")
+        desc_actions = [l["action"] for l in r.json()["logs"]]
+        assert desc_actions == ["login", "login_failed"]
+        r = await ac.get(f"/api/activity?actor={name}&order=asc")
+        asc_actions = [l["action"] for l in r.json()["logs"]]
+        assert asc_actions == ["login_failed", "login"]

@@ -13,6 +13,9 @@ const SettingsView = {
       // 工作日志
       logs: [], logTotal: 0, logActions: [], logUsers: [],
       logUser: '', logAction: '', logPage: 0, logLimit: 20, logsAdmin: false,
+      logOrder: 'desc',                  // 服务端排序：desc 最新在前 / asc 最早在前
+      // 提示词库表格排序（客户端）
+      pSort: 'updated_at', pOrder: 'desc',
     };
   },
   computed: {
@@ -24,11 +27,28 @@ const SettingsView = {
     // 当前 (环节, 模式) 下的自定义提示词；admin 看全部用户的
     filtered() {
       const m = this.curItem ? this.curItem.mode : null;
-      return this.customs.filter(p => p.stage === this.curStage && p.mode === m);
+      const rows = this.customs.filter(p => p.stage === this.curStage && p.mode === m);
+      return sortRows(rows, this.pSort, this.pOrder);
     },
   },
   methods: {
     fmtTime,
+    toggleLogOrder() {
+      this.logOrder = this.logOrder === 'desc' ? 'asc' : 'desc';
+      this.logPage = 0; this.loadLogs();
+    },
+    sortPrompts(col) {
+      if (this.pSort === col) {
+        this.pOrder = this.pOrder === 'asc' ? 'desc' : 'asc';
+      } else {
+        this.pSort = col;
+        this.pOrder = col === 'updated_at' ? 'desc' : 'asc';
+      }
+    },
+    pMark(col) {
+      if (this.pSort !== col) return '';
+      return this.pOrder === 'asc' ? ' ▲' : ' ▼';
+    },
     // ---------- 工作日志 ----------
     actLabel(a) {
       return {
@@ -49,6 +69,7 @@ const SettingsView = {
           + '&limit=' + this.logLimit + '&offset=' + (this.logPage * this.logLimit);
         if (this.logUser) url += '&user=' + encodeURIComponent(this.logUser);
         if (this.logAction) url += '&action=' + encodeURIComponent(this.logAction);
+        url += '&order=' + this.logOrder;
         const r = await api.get(url);
         this.logs = r.logs; this.logTotal = r.total;
         this.logActions = r.actions; this.logsAdmin = r.is_admin;
@@ -192,7 +213,7 @@ const SettingsView = {
         </span>
       </div>
       <table class="table" style="margin-top:12px" v-if="logs.length">
-        <thead><tr><th>时间</th><th v-if="logsAdmin">用户</th><th>动作</th><th>内容</th></tr></thead>
+        <thead><tr><th class="th-sort" @click="toggleLogOrder" title="点击切换时间正序/倒序">时间{{ logOrder === 'asc' ? ' ▲' : ' ▼' }}</th><th v-if="logsAdmin">用户</th><th>动作</th><th>内容</th></tr></thead>
         <tbody>
           <tr v-for="l in logs" :key="l.id" style="cursor:default">
             <td class="muted" style="white-space:nowrap">{{ fmtTime(l.created_at) }}</td>
@@ -262,7 +283,7 @@ const SettingsView = {
       </div>
       <table class="table" v-if="filtered.length" style="margin-top:10px">
         <thead><tr>
-          <th>名称</th><th v-if="isAdmin">归属</th><th>状态</th><th>更新时间</th><th>操作</th>
+          <th class="th-sort" @click="sortPrompts('name')">名称{{ pMark('name') }}</th><th v-if="isAdmin" class="th-sort" @click="sortPrompts('owner_name')">归属{{ pMark('owner_name') }}</th><th class="th-sort" @click="sortPrompts('is_active')">状态{{ pMark('is_active') }}</th><th class="th-sort" @click="sortPrompts('updated_at')">更新时间{{ pMark('updated_at') }}</th><th>操作</th>
         </tr></thead>
         <tbody>
           <tr v-for="p in filtered" :key="p.id">

@@ -25,6 +25,20 @@ window.MODE = {
 };
 window.RISK = { green: { label: '绿', cls: 'tag-green' }, yellow: { label: '黄', cls: 'tag-yellow' }, red: { label: '红', cls: 'tag-red' } };
 
+// 通用客户端排序：rows 按 key 排序返回新数组（order: asc/desc），null/undefined 恒排最后。
+// 各视图表格「点击表头排序」的统一实现；服务端分页的列表（任务中心/回收站）走 sort/order 参数。
+window.sortRows = function (rows, key, order) {
+  const dir = order === 'asc' ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const va = a[key], vb = b[key];
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1;
+    if (vb == null) return -1;
+    if (typeof va === 'number' && typeof vb === 'number') return (va - vb) * dir;
+    return String(va).localeCompare(String(vb), 'zh-CN') * dir;
+  });
+};
+
 window.api = {
   async _req(method, url, body, form) {
     const opt = { method, headers: {} };

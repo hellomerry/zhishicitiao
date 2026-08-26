@@ -44,16 +44,22 @@ def _row(t: Task) -> dict:
 
 
 @router.get("/api/trash")
-async def list_trash(limit: int = 50, offset: int = 0):
-    """回收站列表（所有登录用户可见），按移入时间倒序。"""
+async def list_trash(limit: int = 50, offset: int = 0,
+                     sort: str = "trashed_at", order: str = "desc"):
+    """回收站列表（所有登录用户可见），默认按移入时间倒序。
+    sort 白名单：trashed_at / prev_status / mode / trashed_by；order: asc/desc。"""
     limit = max(1, min(limit, 200))
     async with SessionLocal() as session:
         where = [Task.status == "trashed"]
         total = (await session.execute(
             select(func.count(Task.id)).where(*where))).scalar() or 0
+        sort_col = {"trashed_at": Task.trashed_at, "prev_status": Task.prev_status,
+                    "mode": Task.mode, "trashed_by": Task.trashed_by}.get(sort, Task.trashed_at)
+        order_by = sort_col.asc() if order == "asc" else sort_col.desc()
         tasks = (await session.execute(
             select(Task).where(*where)
-            .order_by(Task.trashed_at.desc()).limit(limit).offset(offset))).scalars().all()
+            .order_by(order_by, Task.trashed_at.desc())
+            .limit(limit).offset(offset))).scalars().all()
     return {"total": total, "items": [_row(t) for t in tasks]}
 
 
