@@ -138,13 +138,30 @@ const TasksView = {
       } catch (e) { alert('删除失败：' + e.message); }
     },
     async researchRefs() {
-      const def = ((this.detailTask && this.detailTask.query) || '') + ' 高清';
+      const t = this.detailTask || {};
+      const def = (t.query || '') + ' 高清';
       const q = prompt('输入参考图搜索词（搜 8 张，质量过滤后保留 4 张追加）：', def);
       if (q === null || !q.trim()) return;
+      const body = { actor: this.actorName, query: q.trim() };
+      if (t.mode === 'compare') {
+        // 生图按 A:/B: 前缀分配参考图池；标注不带前缀会进公共池、每页都喂
+        const tags = [...new Set(this.refAssets
+          .map(a => a.subject).filter(s => s && /^(A|B):/.test(s)))];
+        const hint = tags.length
+          ? tags.map((s, i) => `${i + 1}. ${s}`).join('\n')
+          : '（当前无 A:/B: 标注）';
+        const pick = prompt(
+          '对比模式需标注搜索标的（生图按 A:/B: 前缀分配参考图池）：\n' + hint +
+          '\n\n输入编号选择，或直接输入标注（如 A:小米17 Pro（细节））：',
+          tags[0] || 'A:');
+        if (pick === null || !pick.trim()) return;
+        const idx = parseInt(pick.trim(), 10);
+        body.subject = (idx >= 1 && idx <= tags.length) ? tags[idx - 1] : pick.trim();
+      }
       try {
-        const r = await api.post(`/api/tasks/${this.detailTask.id}/ref_search`,
-          { actor: this.actorName, query: q.trim() });
-        alert(`已追加 ${r.added} 张参考图` + (r.filtered ? `（过滤低质 ${r.filtered} 张）` : ''));
+        const r = await api.post(`/api/tasks/${t.id}/ref_search`, body);
+        alert(`已追加 ${r.added} 张参考图` + (r.filtered ? `（过滤低质 ${r.filtered} 张）` : '') +
+          (body.subject ? `，标注「${body.subject}」` : ''));
         await this.open(this.detailTask);
       } catch (e) { alert('重搜失败：' + e.message); }
     },
@@ -374,7 +391,7 @@ const TasksView = {
           <div class="img-grid" v-if="refAssets.length">
             <figure v-for="a in refAssets" :key="a.id">
               <img :src="a.display_url || a.image_url" loading="lazy" alt="" @click="openZoom(a, true)">
-              <figcaption class="muted">参考 {{ a.page_index }} · 实景抓取
+              <figcaption class="muted">参考 {{ a.page_index }} · {{ a.subject || '实景抓取' }}
                 <a href="javascript:;" style="color:#c00;margin-left:6px" title="删除此参考图" @click="delRef(a)">删除</a></figcaption>
             </figure>
           </div>
