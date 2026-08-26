@@ -11,6 +11,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import delete, func, select, text
 
 from src.db.session import SessionLocal
@@ -106,6 +107,75 @@ async def restore_task(task_id: str, actor: str = "anonymous"):
     await log_action(actor, "restore_task", f"从回收站恢复（还原为 {restored}）：{query[:50]}",
                      task_id=tid)
     return {"ok": True, "status": restored}
+
+
+class _BatchIds(BaseModel):
+    task_ids: list[str]
+    actor: str = "anonymous"
+
+
+def _parse_ids(raw: list[str]) -> list[uuid.UUID]:
+    ids = []
+    for s in raw[:500]:  # 单次批量上限 500 条
+        try:
+            ids.append(uuid.UUID(s))
+        except (ValueError, AttributeError):
+            continue
+    return ids
+
+
+@router.post("/api/tasks/trash_batch")
+async def trash_batch(body: _BatchIds):
+    """批量移入回收站：终态任务移入，排队/生成中/已入站的跳过。返回 {moved, skipped}。"""
+    ids = _parse_ids(body.task_ids)
+    if not ids:
+        raise HTTPException(status_code=400, detail="task_ids 为空")
+    async with SessionLocal() as session:
+        await _actor_role(session, body.actor)
+        tasks = (await session.execute(
+            select(Task).where(Task.id.in_(ids)))).scalars().all()
+        now = datetime.now(timezone.utc)
+        moved = 0
+        for t in tasks:
+            if t.status not in _TRASHABLE:
+                continue
+            t.prev_status = t.status
+            t.status = "trashed"
+            t.trashed_at = now
+            t.trashed_by = body.actor
+            moved += 1
+        await session.commit()
+    skipped = len(ids) - moved
+    if moved:
+        await log_action(body.actor, "trash_task", f"批量移入回收站 {moved} 条任务")
+    return {"ok": True, "moved": moved, "skipped": skipped}
+
+
+@router.post("/api/tasks/restore_batch")
+async def restore_batch(body: _BatchIds):
+    """批量恢复：仅在回收站中的任务还原为移入前状态。返回 {restored, skipped}。"""
+    ids = _parse_ids(body.task_ids)
+    if not ids:
+        raise HTTPException(status_code=400, detail="task_ids 为空")
+    async with SessionLocal() as session:
+        await _actor_role(session, body.actor)
+        tasks = (await session.execute(
+            select(Task).where(Task.id.in_(ids)),
+        )).scalars().all()
+        restored = 0
+        for t in tasks:
+            if t.status != "trashed":
+                continue
+            t.status = t.prev_status or "review"
+            t.prev_status = None
+            t.trashed_at = None
+            t.trashed_by = None
+            restored += 1
+        await session.commit()
+    skipped = len(ids) - restored
+    if restored:
+        await log_action(body.actor, "restore_task", f"批量从回收站恢复 {restored} 条任务")
+    return {"ok": True, "restored": restored, "skipped": skipped}
 
 
 @router.delete("/api/tasks/{task_id}/purge")

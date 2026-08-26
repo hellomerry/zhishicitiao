@@ -8,6 +8,7 @@ const TasksView = {
       nodes: [], timer: null, es: null, sseTimer: null,
       live: {},              // task_id -> 内存实时态（current_node/debug/imgs）
       detail: null, detailError: '', retrying: false,
+      selected: {},           // 勾选的任务 id -> true（仅终态任务可勾选，用于批量移入回收站）
       exportJob: null, exportTimer: null,   // 任务式导出进度 {id,status,total,done,detail}
       showExport: false,     // 导出弹窗开关（关闭不中断后台打包）
       zoom: null,            // 图片放大浏览 {src, title, text}
@@ -33,6 +34,11 @@ const TasksView = {
     },
     canTrash() {
       return this.detailTask && ['review', 'approved', 'rejected', 'failed'].includes(this.detailTask.status);
+    },
+    selectedIds() { return Object.keys(this.selected).filter(id => this.selected[id]); },
+    allTrashableSelected() {
+      const rows = this.list.filter(t => this.trashableRow(t));
+      return rows.length > 0 && rows.every(t => this.selected[t.id]);
     },
     retryLabel() {
       if (!this.detailTask) return '';
@@ -72,6 +78,7 @@ const TasksView = {
         ]);
         this.list = r.items; this.total = r.total; this.error = '';
         this.approvedCount = (s.by_status || {}).approved || 0;
+        this.selected = {};
       } catch (e) { this.error = e.message; }
     },
     async loadLive() {
@@ -140,6 +147,26 @@ const TasksView = {
         this.close();
         await this.load();
       } catch (e) { this.detailError = e.message; }
+    },
+    trashableRow(t) { return ['review', 'approved', 'rejected', 'failed'].includes(t.status); },
+    toggleSelAll() {
+      const rows = this.list.filter(t => this.trashableRow(t));
+      const on = !this.allTrashableSelected;
+      const sel = {};
+      if (on) rows.forEach(t => { sel[t.id] = true; });
+      this.selected = sel;
+    },
+    async trashSelected() {
+      const ids = this.selectedIds;
+      if (!ids.length) return;
+      if (!confirm(`确定把勾选的 ${ids.length} 条任务移入回收站？\n\n排队/生产中的任务不可移入；移入后可在「回收站」中恢复。`)) return;
+      try {
+        const r = await api.post('/api/tasks/trash_batch', { task_ids: ids, actor: this.actorName });
+        let msg = `已移入回收站 ${r.moved} 条`;
+        if (r.skipped) msg += `，跳过 ${r.skipped} 条（非终态）`;
+        alert(msg);
+        await this.load();
+      } catch (e) { this.error = e.message; }
     },
     onSse() {
       // 任意任务/节点事件 → 节流刷新列表与打开的详情
@@ -225,15 +252,17 @@ const TasksView = {
         <button v-else class="btn btn-primary btn-sm" @click="showExport = true">📦 下载内容包（{{ (exportJob.parts || []).length }} 包）</button>
       </template>
       <span v-else class="btn btn-outline btn-sm" style="opacity:.55;cursor:not-allowed" title="任务经审核角色（A/B/C 任一）审核通过后，即进入导出通道">📦 导出已通过内容包（0）</span>
+      <button class="btn btn-outline btn-sm" :disabled="!selectedIds.length" @click="trashSelected">🗑 移入回收站（{{ selectedIds.length }}）</button>
       <span class="muted" style="margin-left:auto">共 {{ total }} 条</span>
     </div>
     <p v-if="error" class="form-error">{{ error }}</p>
     <div class="card">
       <div v-if="!list.length" class="empty">暂无任务，<router-link to="/import">去导入 →</router-link></div>
       <table v-else class="table">
-        <thead><tr><th>Query</th><th>模式</th><th>状态</th><th>风险</th><th>当前节点</th><th>创建时间</th></tr></thead>
+        <thead><tr><th style="width:32px"><input type="checkbox" style="width:auto" :checked="allTrashableSelected" @change="toggleSelAll" title="全选可移入回收站的任务"></th><th>Query</th><th>模式</th><th>状态</th><th>风险</th><th>当前节点</th><th>创建时间</th></tr></thead>
         <tbody>
           <tr v-for="t in list" :key="t.id" @click="open(t)" :class="{selected: detailTask && detailTask.id === t.id}">
+            <td @click.stop><input v-if="trashableRow(t)" type="checkbox" style="width:auto" v-model="selected[t.id]"></td>
             <td class="q-cell">{{ t.query }}</td>
             <td><span class="tag tag-blue">{{ modeLabel(t.mode) }}</span></td>
             <td><span class="tag" :class="statusTag(t.status).cls">{{ statusTag(t.status).label }}</span></td>

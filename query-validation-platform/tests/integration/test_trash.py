@@ -188,3 +188,48 @@ async def test_export_approved_auto_trashes_exported_tasks():
         # 恢复后回到 approved，重新出现在任务列表
         r = await ac.post(f"/api/tasks/{t1.id}/restore?actor={admin}")
         assert r.json()["status"] == "approved"
+
+
+@pytest.mark.asyncio
+async def test_trash_batch_and_restore_batch():
+    """批量移入：终态移入、非终态跳过；批量恢复：还原各自移入前状态。"""
+    user = await _make_user()
+    t_review = await _make_task(status="review")
+    t_failed = await _make_task(status="failed")
+    t_draft = await _make_task(status="draft")       # 不可移入
+    ids = [str(t_review.id), str(t_failed.id), str(t_draft.id)]
+    async with _client() as ac:
+        r = await ac.post("/api/tasks/trash_batch",
+                          json={"task_ids": ids, "actor": user})
+        assert r.json() == {"ok": True, "moved": 2, "skipped": 1}
+        # 幂等：再移一次全部跳过
+        r = await ac.post("/api/tasks/trash_batch",
+                          json={"task_ids": ids, "actor": user})
+        assert r.json()["moved"] == 0 and r.json()["skipped"] == 3
+        # 回收站有 2 条
+        r = await ac.get("/api/trash")
+        assert r.json()["total"] == 2
+        # 批量恢复
+        r = await ac.post("/api/tasks/restore_batch",
+                          json={"task_ids": ids, "actor": user})
+        assert r.json()["restored"] == 2 and r.json()["skipped"] == 1
+    async with SessionLocal() as s:
+        t1 = (await s.execute(select(Task).where(Task.id == t_review.id))).scalar_one()
+        t2 = (await s.execute(select(Task).where(Task.id == t_failed.id))).scalar_one()
+        t3 = (await s.execute(select(Task).where(Task.id == t_draft.id))).scalar_one()
+        assert t1.status == "review" and t1.prev_status is None
+        assert t2.status == "failed"
+        assert t3.status == "draft"
+
+
+@pytest.mark.asyncio
+async def test_batch_requires_valid_actor_and_nonempty_ids():
+    user = await _make_user()
+    task = await _make_task(status="review")
+    async with _client() as ac:
+        r = await ac.post("/api/tasks/trash_batch",
+                          json={"task_ids": [str(task.id)], "actor": f"ghost-{_uniq()}"})
+        assert r.status_code == 401
+        r = await ac.post("/api/tasks/trash_batch",
+                          json={"task_ids": ["not-a-uuid"], "actor": user})
+        assert r.status_code == 400
