@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, or_
 from src.db.session import SessionLocal
 from src.models.review import (ReviewSession, ReviewAction, Issue, Approval,
                                RiskClassification, RejectMark)
@@ -209,7 +209,10 @@ async def task_detail(task_id: str):
             evs = (await session.execute(select(Evidence).where(Evidence.claim_id == c.id))).scalars().all()
             evidences.extend(evs)
         assets = (await session.execute(
-            select(Asset).where(Asset.task_id == tid).order_by(Asset.page_index))).scalars().all()
+            select(Asset).where(Asset.task_id == tid,
+                                or_(Asset.source_type != "ai_generated",
+                                    Asset.is_active == True))
+            .order_by(Asset.page_index))).scalars().all()
         ocrs = (await session.execute(
             select(OcrResult).where(OcrResult.asset_id.in_([a.id for a in assets])))).scalars().all()
         risk = (await session.execute(

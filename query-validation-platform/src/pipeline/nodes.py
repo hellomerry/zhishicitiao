@@ -622,7 +622,8 @@ async def node_ocr_read(input_data: dict) -> dict:
     async with SessionLocal() as session:
         assets = await session.execute(
             select(Asset).where(Asset.task_id == input_data["task_id"],
-                                Asset.source_type == "ai_generated"))
+                                Asset.source_type == "ai_generated",
+                                Asset.is_active == True))
         rows = [(a.id, a.page_index, a.image_url) for a in assets.scalars()]
     if settings.mock_image_gen:
         # mock 生图时配图是占位 SVG，无真实文字可识别，沿用桩逻辑
@@ -667,7 +668,8 @@ async def node_cross_check(input_data: dict) -> dict:
             select(Asset.page_index, OcrResult.raw_text, OcrResult.confidence)
             .join(OcrResult, OcrResult.asset_id == Asset.id)
             .where(Asset.task_id == input_data["task_id"],
-                   Asset.source_type == "ai_generated"))
+                   Asset.source_type == "ai_generated",
+                   Asset.is_active == True))
         ocr_map = {r.page_index: (r.raw_text or "", r.confidence)
                    for r in ocr_rows.all()}
         all_mismatches = []
@@ -750,7 +752,8 @@ async def node_publish_snapshot(input_data: dict) -> dict:
         # 只校验 AI 生成的交付配图；compare/single 的实景参考图（official）不计入交付页数
         assets = await session.execute(
             select(Asset).where(Asset.task_id == input_data["task_id"],
-                                Asset.source_type == "ai_generated")
+                                Asset.source_type == "ai_generated",
+                                Asset.is_active == True)
             .order_by(Asset.page_index))
         asset_list = assets.scalars().all()
         delivery_errors = []

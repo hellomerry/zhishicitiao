@@ -247,17 +247,24 @@ async def test_partial_regen_only_touches_marked_items():
             select(PageCopy).where(PageCopy.task_id == task.id))).scalars().all()}
         new_assets = {a.page_index: a.id for a in (await session.execute(
             select(Asset).where(Asset.task_id == task.id,
-                                Asset.source_type == "ai_generated"))).scalars().all()}
+                                Asset.source_type == "ai_generated",
+                                Asset.is_active == True))).scalars().all()}
         # P2 文案被重写，其他页原样
         assert new_pages[2] != old_pages[2]
         for p in (1, 3, 4, 5, 6):
             assert new_pages[p] == old_pages[p]
-        # P2/P3 图被替换，其他图原样（不重复消耗生图算力）
+        # P2/P3 正式版已换成新图，其他图原样（不重复消耗生图算力）
         assert new_assets[2] != old_assets[2]
         assert new_assets[3] != old_assets[3]
         for p in (1, 4, 5, 6):
             assert new_assets[p] == old_assets[p]
-        # 草稿不动、页数/图数不叠加
+        # 旧版图不删除，降级为历史版本保留（2026-08-26 版本保留），可对比/换回
+        inactive = (await session.execute(
+            select(Asset).where(Asset.task_id == task.id,
+                                Asset.source_type == "ai_generated",
+                                Asset.is_active == False))).scalars().all()
+        assert {a.id for a in inactive} == {old_assets[2], old_assets[3]}
+        # 草稿不动、正式版页数/图数不叠加
         assert (await session.execute(
             select(func.count()).select_from(Draft).where(
                 Draft.task_id == task.id))).scalar() == draft_count
@@ -329,3 +336,98 @@ async def test_reject_mark_validation():
             "action_type": "reject",
             "marks": [{"item_type": "page", "page_index": 2, "reason": "  "}]})
         assert r.status_code == 400
+
+
+# ---------- 配图版本保留：历史版本换回正式（2026-08-26，迁移 009） ----------
+
+async def _make_user(role="C") -> str:
+    from sqlalchemy import text as _text
+    from src.api.auth import hash_password
+    name = f"u-{_uniq()}"
+    async with SessionLocal() as s:
+        await s.execute(_text(
+            "INSERT INTO users (name, role, password_hash) VALUES (:n, :r, :p)"),
+            {"n": name, "r": role, "p": hash_password("pw-123456")})
+        await s.commit()
+    return name
+
+
+@pytest.mark.asyncio
+async def test_activate_switches_active_version_and_rebuilds_checks():
+    """历史版本换回正式：activate 后正式/历史互换，交叉校验与风险分级随之重建。"""
+    from src.models.review import RiskClassification
+    from src.models.assets import CrossCheck
+    from src.services.regen import partial_regen
+
+    task = await _make_task()
+
+    async def fake_llm(prompt, *a, **kw):
+        return FAKE_DRAFT
+
+    with patch("src.pipeline.nodes.call_with_failover", side_effect=fake_llm):
+        await run_pipeline(task.id)
+    async with SessionLocal() as session:
+        old_id = (await session.execute(
+            select(Asset.id).where(Asset.task_id == task.id,
+                                   Asset.source_type == "ai_generated",
+                                   Asset.page_index == 3))).scalars().all()[0]
+    await _reject_with_marks(task.id, [
+        {"item_type": "image", "page_index": 3, "reason": "图上有乱码"}])
+    with patch("src.pipeline.nodes.call_with_failover", side_effect=fake_llm):
+        await partial_regen(task.id)
+    async with SessionLocal() as session:
+        new_id = (await session.execute(
+            select(Asset.id).where(Asset.task_id == task.id,
+                                   Asset.source_type == "ai_generated",
+                                   Asset.is_active == True,
+                                   Asset.page_index == 3))).scalar_one()
+        assert new_id != old_id  # 重出后新图是正式版，旧图已转历史
+
+    admin = await _make_user(role="admin")
+    async with _client() as ac:
+        r = await ac.post(f"/api/assets/{old_id}/activate", params={"actor": admin})
+        assert r.status_code == 200 and r.json()["activated"] is True
+        assert r.json()["page_index"] == 3
+    async with SessionLocal() as session:
+        a_old = (await session.execute(
+            select(Asset).where(Asset.id == old_id))).scalar_one()
+        a_new = (await session.execute(
+            select(Asset).where(Asset.id == new_id))).scalar_one()
+        assert a_old.is_active is True and a_new.is_active is False
+        # 校验链重建：交叉校验非空、风险分级恰好 1 条（不叠加）
+        cc = (await session.execute(
+            select(func.count()).select_from(CrossCheck).where(
+                CrossCheck.task_id == task.id))).scalar()
+        assert cc > 0
+        rc = (await session.execute(
+            select(func.count()).select_from(RiskClassification).where(
+                RiskClassification.task_id == task.id))).scalar()
+        assert rc == 1
+
+
+@pytest.mark.asyncio
+async def test_activate_rejects_ref_and_non_owner():
+    """activate 仅适用 AI 生成图（official 400）；非属主非 admin 404。"""
+    import hashlib
+    task = await _make_task()
+    async with SessionLocal() as s:
+        ref = Asset(task_id=task.id, page_index=1, subject="t",
+                    source_type="official", copyright_status="unknown",
+                    hash=hashlib.md5(b"r").hexdigest(),
+                    image_url="http://x/1.png", is_illustration=False)
+        ai = Asset(task_id=task.id, page_index=1,
+                   source_type="ai_generated", copyright_status="clear",
+                   hash=hashlib.md5(b"a").hexdigest(),
+                   image_url="http://x/2.png", is_illustration=False)
+        s.add_all([ref, ai])
+        await s.commit()
+        await s.refresh(ref)
+        await s.refresh(ai)
+        ref_id, ai_id = ref.id, ai.id
+    admin = await _make_user(role="admin")
+    other = await _make_user(role="C")
+    async with _client() as ac:
+        r = await ac.post(f"/api/assets/{ref_id}/activate", params={"actor": admin})
+        assert r.status_code == 400
+        r = await ac.post(f"/api/assets/{ai_id}/activate", params={"actor": other})
+        assert r.status_code == 404

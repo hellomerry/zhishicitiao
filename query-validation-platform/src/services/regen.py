@@ -167,10 +167,11 @@ async def partial_regen(task_id) -> dict:
         from src.gateway.ocr import ocr_image
         image_template = await get_effective_prompt("image_gen", mode, owner_id)
         async with SessionLocal() as session:
-            # 保留图的 hash 作为去重基准：重生成图不得与已认可的图重复
+            # 保留图的 hash 作为去重基准：重生成图不得与已认可的图重复（只算正式版）
             kept = (await session.execute(
                 select(Asset.hash).where(Asset.task_id == task_id,
                                          Asset.source_type == "ai_generated",
+                                         Asset.is_active == True,
                                          ~Asset.page_index.in_(images_to_regen)))
             ).scalars().all()
             seen_hashes = {h for h in kept if h}
@@ -202,14 +203,15 @@ async def partial_regen(task_id) -> dict:
                     r, prompt, reference_urls, task_id, p, seen_hashes)
                 extra_gen += extra
             async with SessionLocal() as session:
+                # 旧版本不删除，降级为历史版本（is_active=false）保留，
+                # 任务详情可对比/换回（2026-08-26 配图版本保留，迁移 009）
                 olds = (await session.execute(
                     select(Asset).where(Asset.task_id == task_id,
                                         Asset.source_type == "ai_generated",
+                                        Asset.is_active == True,
                                         Asset.page_index == p))).scalars().all()
                 for o in olds:
-                    await session.execute(
-                        delete(OcrResult).where(OcrResult.asset_id == o.id))
-                    await session.delete(o)
+                    o.is_active = False
                 await session.flush()
                 asset = Asset(**r)
                 session.add(asset)

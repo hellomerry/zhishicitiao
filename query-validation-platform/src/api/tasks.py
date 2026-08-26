@@ -4,7 +4,7 @@ import uuid
 from pathlib import Path
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Response
 from pydantic import BaseModel
-from sqlalchemy import select, func, text
+from sqlalchemy import select, func, text, or_
 from src.db.session import SessionLocal
 from src.models.tasks import Task
 from src.services.activity import log_action
@@ -267,6 +267,7 @@ async def task_detail(task_id: str, actor: str = ""):
             "page_copies": [{"page_index": p.page_index, "body": p.body} for p in page_copies],
             "assets": [{"id": str(a.id), "page_index": a.page_index,
                         "subject": a.subject, "source_type": a.source_type,
+                        "is_active": a.is_active,
                         "image_url": a.image_url,
                         "display_url": f"/api/assets/{a.id}/image"} for a in assets],
             "claims": [{"claim_text": c.claim_text, "risk_level": c.risk_level,
@@ -368,7 +369,10 @@ async def random_sample():
         draft = (await session.execute(
             select(Draft).where(Draft.task_id == tid).order_by(Draft.version.desc()))).scalars().first()
         assets = (await session.execute(
-            select(Asset).where(Asset.task_id == tid).order_by(Asset.page_index))).scalars().all()
+            select(Asset).where(Asset.task_id == tid,
+                                or_(Asset.source_type != "ai_generated",
+                                    Asset.is_active == True))
+            .order_by(Asset.page_index))).scalars().all()
         page_copies = (await session.execute(
             select(PageCopy).where(PageCopy.task_id == tid)
             .order_by(PageCopy.page_index))).scalars().all()
@@ -449,6 +453,60 @@ async def delete_ref_asset(asset_id: str, actor: str = "anonymous"):
         await session.commit()
     await log_action(actor, "delete_ref_asset", f"asset_id={asset_id}", task_id=tid)
     return {"deleted": True}
+
+
+@router.post("/api/assets/{asset_id}/activate")
+async def activate_asset(asset_id: str, actor: str = "anonymous"):
+    """把历史版本配图换回正式版（2026-08-26 配图版本保留）：
+    同任务同页的 AI 生成图中，仅本资产置 is_active=true，其余降级为历史版本。
+    换回后重建交叉校验/风险分级（基于各版本留存的 OCR），保证风险口径跟随正式版。
+    归属隔离：非属主非 admin → 404。"""
+    from sqlalchemy import delete
+    from src.models.assets import Asset, CrossCheck
+    from src.models.review import RiskClassification
+    from src.services.ownership import check_owner, get_actor
+    from src.pipeline.nodes import execute_node, node_cross_check, node_risk_classify
+    try:
+        aid = uuid.UUID(asset_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid asset_id")
+    async with SessionLocal() as session:
+        uid, role = await get_actor(session, actor)
+        asset = (await session.execute(
+            select(Asset).where(Asset.id == aid))).scalars().first()
+        if not asset:
+            raise HTTPException(status_code=404, detail="asset not found")
+        task = (await session.execute(
+            select(Task).where(Task.id == asset.task_id))).scalars().first()
+        if not task:
+            raise HTTPException(status_code=404, detail="task not found")
+        check_owner(task, uid, role)
+        if asset.source_type != "ai_generated":
+            raise HTTPException(status_code=400,
+                                detail="仅 AI 生成配图可切换正式版，参考图无版本概念")
+        siblings = (await session.execute(
+            select(Asset).where(Asset.task_id == asset.task_id,
+                                Asset.source_type == "ai_generated",
+                                Asset.page_index == asset.page_index))).scalars().all()
+        for s in siblings:
+            s.is_active = (s.id == asset.id)
+        # 校验链按新正式版重建（删除旧行，下面走 execute_node 重算）
+        await session.execute(
+            delete(CrossCheck).where(CrossCheck.task_id == asset.task_id))
+        await session.execute(
+            delete(RiskClassification).where(
+                RiskClassification.task_id == asset.task_id))
+        await session.commit()
+        tid = str(asset.task_id)
+        page = asset.page_index
+    # 输入带 asset_id：幂等键区别于流水线常规运行，重复激活同一资产自动跳过
+    await execute_node(tid, "cross_check",
+                       {"task_id": tid, "activated": asset_id}, node_cross_check)
+    await execute_node(tid, "risk_classify",
+                       {"task_id": tid, "activated": asset_id}, node_risk_classify)
+    await log_action(actor, "activate_asset",
+                     f"asset_id={asset_id} page={page}", task_id=tid)
+    return {"activated": True, "page_index": page}
 
 
 class RefSearchIn(BaseModel):
@@ -568,7 +626,8 @@ async def _build_approved_zips(job: dict | None = None,
             .order_by(PageCopy.page_index))).scalars().all()
         assets = (await session.execute(
             select(Asset).where(Asset.task_id.in_(task_ids),
-                                Asset.source_type == "ai_generated")
+                                Asset.source_type == "ai_generated",
+                                Asset.is_active == True)
             .order_by(Asset.page_index))).scalars().all()
     pages_by_task: dict = {}
     for p in pages:

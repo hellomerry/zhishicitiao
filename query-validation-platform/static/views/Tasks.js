@@ -49,9 +49,15 @@ const TasksView = {
       }
       return '↻ 重试该任务（跳过已完成节点）';
     },
-    // 对比/单品任务：交付配图只展示 AI 生成图，抓取的实景参考图单独成区
+    // 对比/单品任务：交付配图只展示正式版 AI 生成图，抓取的实景参考图单独成区
     genAssets() {
-      return ((this.detail && this.detail.assets) || []).filter(a => a.source_type !== 'official');
+      return ((this.detail && this.detail.assets) || [])
+        .filter(a => a.source_type !== 'official' && a.is_active !== false);
+    },
+    // 定点重生成被替换掉的历史版本（可对比、可换回正式）
+    historyAssets() {
+      return ((this.detail && this.detail.assets) || [])
+        .filter(a => a.source_type !== 'official' && a.is_active === false);
     },
     refAssets() {
       return ((this.detail && this.detail.assets) || []).filter(a => a.source_type === 'official');
@@ -123,12 +129,24 @@ const TasksView = {
         title: `P${a.page_index} · AI 生成`,
         text: this.pageCopyOf(a.page_index),
       }));
+      const hist = this.historyAssets.map(a => ({
+        src: a.display_url || a.image_url,
+        title: `P${a.page_index} · 历史版本`,
+        text: this.pageCopyOf(a.page_index),
+      }));
       const ref = this.refAssets.map(a => ({
         src: a.display_url || a.image_url,
         title: `参考 ${a.page_index} · 实景抓取`,
         text: '',
       }));
-      return gen.concat(ref);
+      return gen.concat(hist, ref);
+    },
+    async activateAsset(a) {
+      if (!confirm(`把 P${a.page_index} 的这个历史版本设为正式版？当前正式版将转为历史版本（可随时再换回），交叉校验与风险分级会按新版重建。`)) return;
+      try {
+        await api.post(`/api/assets/${a.id}/activate?actor=` + encodeURIComponent(this.actorName));
+        await this.open(this.detailTask);
+      } catch (e) { alert('操作失败：' + e.message); }
     },
     async delRef(a) {
       if (!confirm(`删除这张参考图（参考 ${a.page_index}）？删除后不可恢复。`)) return;
@@ -379,9 +397,20 @@ const TasksView = {
           <template v-if="genAssets.length">
             <h3>交付配图（{{ genAssets.length }}）</h3>
             <div class="img-grid">
-              <figure v-for="a in genAssets" :key="a.page_index">
+              <figure v-for="a in genAssets" :key="a.id">
                 <img :src="a.display_url || a.image_url" loading="lazy" alt="" @click="openZoom(a, false)">
                 <figcaption class="muted">P{{ a.page_index }} · AI 生成</figcaption>
+              </figure>
+            </div>
+          </template>
+
+          <template v-if="historyAssets.length">
+            <h3>历史版本配图（{{ historyAssets.length }}）<span class="muted" style="font-weight:normal;font-size:13px">定点重生成被替换的旧版，可对比后换回正式</span></h3>
+            <div class="img-grid">
+              <figure v-for="a in historyAssets" :key="a.id">
+                <img :src="a.display_url || a.image_url" loading="lazy" alt="" @click="openZoom(a, false)">
+                <figcaption class="muted">P{{ a.page_index }} · 历史版本
+                  <a href="javascript:;" style="color:#06c;margin-left:6px" title="把此版本设为正式版" @click="activateAsset(a)">设为正式</a></figcaption>
               </figure>
             </div>
           </template>

@@ -19,6 +19,8 @@ class Asset(Base):
     origin_url = Column(Text)  # 上游原始地址（本地持久化前的来源，用于版权追溯）
     model_version = Column(Text)
     is_illustration = Column(Boolean, nullable=False, default=False)
+    # 正式版标记（迁移 009）：定点重生成保留历史版本（false），正式产物只认 true
+    is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
 
