@@ -130,26 +130,52 @@ async def action(payload: ActionIn):
 
 @router.get("/api/review/queue/{role}")
 async def queue(role: str):
+    """待审队列。role=A/B/C 返回该角色的待审会话；
+    role=admin（2026-08-26 起）返回全部有待审会话的任务（按任务聚合，
+    带 open_roles），admin 领取时任选一个开放角色的会话进行审核。"""
     from sqlalchemy import text
     now = datetime.now(timezone.utc)
     async with SessionLocal() as session:
-        rows = (await session.execute(
-            select(ReviewSession, Task, RiskClassification)
-            .join(Task, Task.id == ReviewSession.task_id)
-            .outerjoin(RiskClassification, RiskClassification.task_id == ReviewSession.task_id)
-            .where(ReviewSession.role == role,
-                   ReviewSession.finished_at.is_(None)))).all()
+        stmt = (select(ReviewSession, Task, RiskClassification)
+                .join(Task, Task.id == ReviewSession.task_id)
+                .outerjoin(RiskClassification, RiskClassification.task_id == ReviewSession.task_id)
+                .where(ReviewSession.finished_at.is_(None)))
+        if role != "admin":
+            stmt = stmt.where(ReviewSession.role == role)
+        rows = (await session.execute(stmt)).all()
         reviewer_ids = [rs.reviewer_id for rs, _, _ in rows if rs.reviewer_id]
         names = {}
         if reviewer_ids:
             names = {str(r[0]): r[1] for r in (await session.execute(
                 text("SELECT id, name FROM users WHERE id = ANY(:ids)"),
                 {"ids": reviewer_ids})).all()}
+
+        def _locked(rs):
+            return bool(rs.locked_at and rs.last_heartbeat_at
+                        and (now - rs.last_heartbeat_at).total_seconds() < 30)
+
+        if role == "admin":
+            by_task: dict[str, dict] = {}
+            for rs, t, rc in rows:
+                entry = by_task.setdefault(str(rs.task_id), {
+                    "task_id": str(rs.task_id),
+                    "query": t.query,
+                    "mode": t.mode,
+                    "risk_level": rc.level if rc else None,
+                    "created_at": t.created_at.isoformat() if t.created_at else None,
+                    "open_roles": [],
+                    "locked": False,
+                    "locked_by": None,
+                })
+                entry["open_roles"].append(rs.role)
+                if _locked(rs):
+                    entry["locked"] = True
+                    entry["locked_by"] = names.get(str(rs.reviewer_id))
+            return {"sessions": list(by_task.values())}
+
         sessions = []
         for rs, t, rc in rows:
-            # 30s 心跳窗口内有心跳视为被占用（与领取锁口径一致）
-            locked = bool(rs.locked_at and rs.last_heartbeat_at
-                          and (now - rs.last_heartbeat_at).total_seconds() < 30)
+            locked = _locked(rs)
             sessions.append({
                 "task_id": str(rs.task_id),
                 "query": t.query,

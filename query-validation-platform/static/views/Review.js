@@ -12,12 +12,14 @@ const ReviewView = {
       marks: {},            // 定点驳回标记 {"page:2": {item_type, page_index, reason}}
       zoom: null,           // 图片放大浏览 {src, title, text}
       qSort: 'default',     // 待审队列排序：default（后端顺序）/created（最新优先）/risk（风险优先）/mode
+      actRole: '',          // 实际审核用的会话角色（admin 审核时取任务 open_roles 之一）
     };
   },
   computed: {
     user() { return getUser(); },
     role() { return this.user ? this.user.role : ''; },
-    isReviewer() { return ['A', 'B', 'C'].includes(this.role); },
+    isAdmin() { return this.role === 'admin'; },
+    isReviewer() { return ['A', 'B', 'C', 'admin'].includes(this.role); },
     sortedQueue() {
       const q = this.queue;
       if (this.qSort === 'created') return sortRows(q, 'created_at', 'desc');
@@ -88,6 +90,10 @@ const ReviewView = {
       this.releaseTimers();
       this.current = null; this.currentId = t.task_id; this.detail = null; this.claimed = false; this.lockedBy = ''; this.msg = ''; this.error = '';
       this.marks = {}; this.showReject = false; this.rejectReason = '';
+      // admin 审核：从任务的开放角色会话中选一个（优先 A）作为审核身份
+      this.actRole = this.isAdmin
+        ? (['A', 'B', 'C'].find(r => (t.open_roles || []).includes(r)) || (t.open_roles || [])[0] || 'A')
+        : this.role;
       try {
         const [c, d] = await Promise.all([
           api.get(`/api/review/task/${t.task_id}`),
@@ -99,12 +105,12 @@ const ReviewView = {
     async claim() {
       this.error = '';
       try {
-        const r = await api.post('/api/review/claim', { task_id: this.currentId, role: this.role, reviewer_id: this.user.name });
+        const r = await api.post('/api/review/claim', { task_id: this.currentId, role: this.actRole, reviewer_id: this.user.name });
         if (!r.acquired) { this.lockedBy = r.locked_by || '其他人'; return; }
         this.claimed = true; this.seconds = 0;
         this.tickTimer = setInterval(() => { this.seconds++; }, 1000);
         this.hbTimer = setInterval(() => {
-          api.post('/api/review/heartbeat', { task_id: this.currentId, role: this.role, reviewer_id: this.user.name, client_ts: Date.now() }).catch(() => {});
+          api.post('/api/review/heartbeat', { task_id: this.currentId, role: this.actRole, reviewer_id: this.user.name, client_ts: Date.now() }).catch(() => {});
         }, 10000);
       } catch (e) { this.error = e.message; }
     },
@@ -123,7 +129,7 @@ const ReviewView = {
       this.acting = true; this.error = '';
       try {
         await api.post('/api/review/action', {
-          task_id: this.currentId, role: this.role, reviewer_id: this.user.name,
+          task_id: this.currentId, role: this.actRole, reviewer_id: this.user.name,
           action_type: actionType, reason: actionType === 'reject' ? this.rejectReason.trim() : '',
           marks: actionType === 'reject'
             ? this.marksList.map(m => ({ item_type: m.item_type, page_index: m.page_index, reason: m.reason.trim() }))
@@ -145,7 +151,7 @@ const ReviewView = {
   beforeUnmount() { this.releaseTimers(); },
   template: `
   <app-layout title="任务审核">
-    <div v-if="!isReviewer" class="card empty">当前账号不是审核角色（A/B/C），无待审队列。</div>
+    <div v-if="!isReviewer" class="card empty">当前账号不是审核角色（A/B/C/admin），无待审队列。</div>
     <template v-else>
       <p v-if="error" class="form-error">{{ error }}</p>
       <p v-if="msg" class="form-ok">{{ msg }}</p>
@@ -164,6 +170,7 @@ const ReviewView = {
             <div>
               <span class="tag tag-blue">{{ modeLabel(t.mode) }}</span>
               <span v-if="riskTag(t.risk_level)" class="tag" :class="riskTag(t.risk_level).cls">风险：{{ riskTag(t.risk_level).label }}</span>
+              <span v-if="isAdmin && t.open_roles" class="tag tag-gray">待审：{{ t.open_roles.join('/') }}</span>
               <span v-if="t.locked" class="tag tag-yellow">🔒 {{ t.locked_by }} 审核中</span>
             </div>
           </div>
@@ -189,7 +196,7 @@ const ReviewView = {
                   <span v-if="lockedBy" class="muted">该任务正被 {{ lockedBy }} 审核中，稍后可抢占</span>
                 </template>
                 <template v-else>
-                  <span class="tag tag-green">已领取 · 计时 {{ timerText }}</span>
+                  <span class="tag tag-green">已领取{{ isAdmin ? '（以 ' + actRole + ' 角色审核）' : '' }} · 计时 {{ timerText }}</span>
                   <button class="btn btn-success" :disabled="acting" @click="act('approve')">✓ 通过</button>
                   <button class="btn btn-danger" :disabled="acting" @click="showReject = !showReject">✗ 驳回</button>
                 </template>

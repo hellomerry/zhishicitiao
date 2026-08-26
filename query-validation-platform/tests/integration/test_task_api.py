@@ -427,3 +427,32 @@ async def test_list_tasks_sorting():
         assert [t["query"] for t in r.json()["items"]] == ["q-old", "q-new", "q-mid"]
         r = await ac.get(f"/api/tasks?sort=bogus&order=sideways&actor={admin}")  # 非法参数回退默认
         assert [t["query"] for t in r.json()["items"]] == ["q-new", "q-mid", "q-old"]
+
+
+@pytest.mark.asyncio
+async def test_admin_review_queue_and_action():
+    """admin 审核（2026-08-26）：队列返回全部待审任务（按任务聚合带 open_roles），
+    admin 领取任一开放角色会话审核，定案后任务从所有队列消失。"""
+    admin = await _make_admin()
+    task = await _make_task(status="review")
+    await _make_sessions(task.id, roles=("A", "C"))
+    async with _client() as ac:
+        r = await ac.get("/api/review/queue/admin")
+        entry = next(e for e in r.json()["sessions"] if e["task_id"] == str(task.id))
+        assert sorted(entry["open_roles"]) == ["A", "C"]
+        r = await ac.post("/api/review/claim", json={
+            "task_id": str(task.id), "role": "A", "reviewer_id": admin})
+        assert r.json()["acquired"] is True
+        r = await ac.post("/api/review/action", json={
+            "task_id": str(task.id), "role": "A", "reviewer_id": admin,
+            "action_type": "approve"})
+        assert r.json()["ok"] is True
+        r = await ac.get("/api/review/queue/admin")
+        assert str(task.id) not in [e["task_id"] for e in r.json()["sessions"]]
+    async with SessionLocal() as s:
+        t = (await s.execute(select(Task).where(Task.id == task.id))).scalar_one()
+        assert t.status == "approved"
+        rs = (await s.execute(
+            select(ReviewSession).where(ReviewSession.task_id == task.id))).scalars().all()
+        finished = [x for x in rs if x.finished_at]
+        assert len(finished) == 1 and finished[0].role == "A"
