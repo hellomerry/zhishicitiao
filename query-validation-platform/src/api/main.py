@@ -59,9 +59,12 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 # SPA 入口（static/index.html + hash 路由）
+# no-cache：强制浏览器每次重验证（etag 兜底 304），保证 ?v= 版本号 bump 立即生效，
+# 避免前端更新后用户端仍加载旧 JS（2026-08-26 风险原因中文化被旧缓存挡住的教训）
 @app.get("/")
 async def index():
-    return FileResponse(str(STATIC_DIR / "index.html"))
+    return FileResponse(str(STATIC_DIR / "index.html"),
+                        headers={"Cache-Control": "no-cache"})
 
 
 # 旧页面路径 → SPA hash 路由（兼容旧链接/书签）
