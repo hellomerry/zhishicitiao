@@ -20,7 +20,8 @@ NODE_FN = {
 }
 
 
-async def run_pipeline(task_id, node_inputs: dict | None = None) -> list:
+async def run_pipeline(task_id, node_inputs: dict | None = None,
+                       stop_after: str = None) -> list:
     from src.db.session import SessionLocal
     from src.services.regen import get_rejection_feedback
     results = []
@@ -35,4 +36,8 @@ async def run_pipeline(task_id, node_inputs: dict | None = None) -> list:
         fn = NODE_FN.get(node_name)
         r = await execute_node(task_id, node_name, inputs, fn)
         results.append({"node": node_name, "result": r})
+        if stop_after and node_name == stop_after:
+            # 生图前人工确认门：跑到 stop_after（page_split）即停，其余节点
+            # 等人工确认后以 gen_resume 续跑（已完成节点幂等跳过）
+            break
     return results

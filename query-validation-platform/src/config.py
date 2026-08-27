@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     # 文字后期合成（2026-08-27 终极方案）：AI 只画无字背景，分页文案用真实字体
     # （static/fonts/NotoSansSC-*.otf）程序化合成，从根上消除异体变形/伪汉字
     text_composite_enabled: bool = True
+    # 生图前人工确认门（2026-08-27 用户要求）：page_split 后任务停在 confirm_gen
+    # （待生图），人工确认正文/分页文案/参考图后点「开始生图」才执行 asset_gen——
+    # 生图是最贵步骤，确认门避免为不合格文案/参考图浪费算力
+    image_gen_confirm_gate: bool = True
     mock_image_gen: bool = False         # 开发阶段模拟生图（不调 API、不花钱）
     # 搜实景图 provider（openserp 免费默认 / doubao_ark / bing_api 预留）
     image_search_provider: str = "openserp"

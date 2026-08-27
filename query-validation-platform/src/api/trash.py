@@ -23,7 +23,7 @@ from src.services.regen import clear_generated_content
 
 router = APIRouter()
 
-_TRASHABLE = ("review", "approved", "rejected", "failed")
+_TRASHABLE = ("review", "approved", "rejected", "failed", "confirm_gen")
 
 
 async def _actor_role(session, actor: str):

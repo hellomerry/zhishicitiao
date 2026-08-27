@@ -165,13 +165,19 @@ class TaskScheduler:
             # 定点重生成：只重做被驳回标记的页文案/配图，其余产物保留
             from src.services.regen import partial_regen
             await partial_regen(task_id)
+            await self._mark_status(task_id, "review")
+        elif kind == "gen_resume":
+            # 人工确认门放行：续跑全链（page_split 及之前节点幂等跳过）
+            await run_pipeline(task_id)
+            await self._mark_status(task_id, "review")
+        elif settings.image_gen_confirm_gate:
+            # 生图前人工确认门（2026-08-27）：先跑找图+生文，停在 page_split
+            # 等人工确认（status=confirm_gen），确认后以 gen_resume 续跑生图
+            await run_pipeline(task_id, stop_after="page_split")
+            await self._mark_status(task_id, "confirm_gen")
         else:
             await run_pipeline(task_id)
-        async with SessionLocal() as session:
-            task = (await session.execute(
-                select(Task).where(Task.id == task_id))).scalar_one()
-            task.status = "review"
-            await session.commit()
+            await self._mark_status(task_id, "review")
 
     def snapshot(self) -> dict:
         counts = {"queued": 0, "processing": 0, "done": 0, "failed": 0}

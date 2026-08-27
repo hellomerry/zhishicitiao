@@ -323,6 +323,36 @@ class FixIn(BaseModel):
     marks: list[FixMarkIn] = []
 
 
+@router.post("/api/tasks/{task_id}/start_gen")
+async def start_gen(task_id: str, actor: str = "anonymous"):
+    """生图确认门放行（2026-08-27）：任务跑到 page_split 后停在 confirm_gen
+    （待生图），创建者（或 admin）确认正文/分页文案/参考图无误后点此继续，
+    以 gen_resume 续跑 asset_gen 及之后节点（已完成节点幂等跳过）。
+    """
+    from src.services.ownership import get_actor, check_owner
+    try:
+        tid = uuid.UUID(task_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid task_id")
+    async with SessionLocal() as session:
+        uid, role = await get_actor(session, actor)
+        task = (await session.execute(select(Task).where(Task.id == tid))).scalars().first()
+        if not task:
+            raise HTTPException(status_code=404, detail="task not found")
+        check_owner(task, uid, role)
+        if task.status != "confirm_gen":
+            raise HTTPException(
+                status_code=400,
+                detail=f"当前状态（{task.status}）不可开始生图：仅「待生图」状态可放行")
+        task.status = "draft"
+        query, priority = task.query, task.priority or "normal"
+        await session.commit()
+    await scheduler.enqueue(tid, query, priority=priority, kind="gen_resume")
+    await log_action(actor, "start_gen",
+                     f"确认文案与参考图，开始生图：{query[:50]}", task_id=tid)
+    return {"ok": True, "task_id": str(tid), "status": "draft", "kind": "gen_resume"}
+
+
 @router.post("/api/tasks/{task_id}/fix")
 async def fix_task(task_id: str, payload: FixIn):
     """创建者自助修正（2026-08-27）：任务创建者（或 admin）对自己的任务做定点

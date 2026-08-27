@@ -12,6 +12,7 @@ window.fmtTime = function (iso) { if (!iso) return '-'; try { return new Date(is
 window.STATUS = {
   draft:      { label: '排队中', cls: 'tag-gray' },
   processing: { label: '生产中', cls: 'tag-blue' },
+  confirm_gen:{ label: '待生图', cls: 'tag-yellow' },
   review:     { label: '待审核', cls: 'tag-yellow' },
   approved:   { label: '已通过', cls: 'tag-green' },
   rejected:   { label: '已驳回', cls: 'tag-red' },

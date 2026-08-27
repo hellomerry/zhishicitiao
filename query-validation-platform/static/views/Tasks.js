@@ -34,6 +34,10 @@ const TasksView = {
     canRetry() {
       return this.detailTask && ['failed', 'rejected'].includes(this.detailTask.status);
     },
+    canStartGen() {
+      // 生图确认门：正文/分页文案/参考图已就绪，等人工确认后才执行生图（最贵步骤）
+      return this.detailTask && this.detailTask.status === 'confirm_gen';
+    },
     canFix() {
       // 创建者自助修正：终态任务（待审/已通过/已驳回）可定点标记问题项并自动重生成，
       // 不必等审核员驳回；归属隔离保证非 admin 只能看到/修正自己的任务
@@ -44,7 +48,7 @@ const TasksView = {
         .sort((a, b) => a.page_index - b.page_index || (a.item_type > b.item_type ? 1 : -1));
     },
     canTrash() {
-      return this.detailTask && ['review', 'approved', 'rejected', 'failed'].includes(this.detailTask.status);
+      return this.detailTask && ['review', 'approved', 'rejected', 'failed', 'confirm_gen'].includes(this.detailTask.status);
     },
     selectedIds() { return Object.keys(this.selected).filter(id => this.selected[id]); },
     allTrashableSelected() {
@@ -243,6 +247,17 @@ const TasksView = {
       } catch (e) { this.detailError = e.message; }
       finally { this.retrying = false; }
     },
+    async startGen() {
+      if (!this.detailTask) return;
+      if (!confirm('确认正文、分页文案与参考图无误，开始生图？\n\n生图是最贵步骤（每任务 6 张）。确认前可先增删/重搜参考图；放行后自动完成生图、OCR、校验并进入审核。')) return;
+      this.retrying = true;
+      try {
+        await api.post(`/api/tasks/${this.detailTask.id}/start_gen?actor=` + encodeURIComponent(this.actorName));
+        await this.load();
+        await this.open(this.detailTask);
+      } catch (e) { this.detailError = e.message; }
+      finally { this.retrying = false; }
+    },
     async trashTask() {
       if (!this.detailTask) return;
       if (!confirm('确定把该任务移入回收站？\n\n任务将从任务中心隐藏，生成的文案和配图暂时保留；可在「回收站」中恢复，或由管理员彻底删除。')) return;
@@ -252,7 +267,7 @@ const TasksView = {
         await this.load();
       } catch (e) { this.detailError = e.message; }
     },
-    trashableRow(t) { return ['review', 'approved', 'rejected', 'failed'].includes(t.status); },
+    trashableRow(t) { return ['review', 'approved', 'rejected', 'failed', 'confirm_gen'].includes(t.status); },
     toggleSelAll() {
       const rows = this.list.filter(t => this.trashableRow(t));
       const on = !this.allTrashableSelected;
@@ -396,10 +411,15 @@ const TasksView = {
           <h3>生产进度</h3>
           <steps-bar :nodes="nodes" :completed="detail.completed_nodes" :current="detailTask.status === 'failed' ? detail.current_node : (liveOfDetail && liveOfDetail.current_node) || detail.current_node" :failed="detailTask.status === 'failed'"></steps-bar>
 
-          <div v-if="canRetry || canTrash || canFix" style="margin:12px 0">
+          <div v-if="canRetry || canTrash || canFix || canStartGen" style="margin:12px 0">
+            <button v-if="canStartGen" class="btn btn-primary" :disabled="retrying" @click="startGen">{{ retrying ? '处理中…' : '▶ 确认并开始生图' }}</button>
             <button v-if="canRetry" class="btn btn-primary" :disabled="retrying" @click="retry">{{ retrying ? '处理中…' : retryLabel }}</button>
             <button v-if="canFix" class="btn btn-outline" @click="fixMode = !fixMode; fixMarks = {}">{{ fixMode ? '取消修正' : '✎ 标记修正' }}</button>
             <button v-if="canTrash" class="btn btn-outline" @click="trashTask">🗑 移入回收站</button>
+          </div>
+
+          <div v-if="canStartGen" class="card" style="margin:12px 0;border:1px solid #f59e0b">
+            <p style="margin:0"><b>待生图确认</b>：<span class="muted">正文、分页文案与实景参考图已就绪。请检查下方内容：参考图可「重搜/删除」调整；确认无误后点「▶ 确认并开始生图」，系统将生成 6 张配图并完成校验进入审核。</span></p>
           </div>
 
           <div v-if="fixMode" class="card" style="margin:12px 0;border:1px solid #f59e0b">
