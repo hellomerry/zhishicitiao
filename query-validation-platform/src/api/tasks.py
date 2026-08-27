@@ -641,9 +641,9 @@ class RefSearchIn(BaseModel):
 
 @router.post("/api/tasks/{task_id}/ref_search")
 async def ref_search(task_id: str, payload: RefSearchIn):
-    """人工重搜参考图：按给定搜索词搜 8 张，质量过滤后择优保留 4 张，
-    作为 official 资产追加到任务（不删旧图，旧图由用户手动删除）。
-    归属隔离：非属主非 admin → 404。"""
+    """人工重搜参考图：按给定搜索词搜 8 张，达最低分辨率的全保留（不设上限）
+    并排重（对任务现有参考图按 hash/URL 去重），作为 official 资产追加到任务
+    （不删旧图，旧图由用户手动删除）。归属隔离：非属主非 admin → 404。"""
     import hashlib
     from src.models.assets import Asset
     from src.gateway.image_search import search_image
@@ -667,25 +667,112 @@ async def ref_search(task_id: str, payload: RefSearchIn):
         start = ((await session.execute(
             select(func.max(Asset.page_index)).where(Asset.task_id == tid))
         ).scalar_one_or_none() or 0) + 1
+        # 排重基准：任务现有参考图的 hash 与 URL，重复的不再收
+        existing = (await session.execute(
+            select(Asset.hash, Asset.image_url, Asset.origin_url).where(
+                Asset.task_id == tid, Asset.source_type == "official"))).all()
+        seen = {"hashes": {r[0] for r in existing if r[0]},
+                "urls": {u for r in existing for u in (r[1], r[2]) if u}}
         if settings.mock_image_gen:
-            refs = [{"url": g["image_url"], "origin": None,
-                     "engine": g.get("engine", "search")} for g in got[:4]]
+            refs = []
+            dupes = 0
+            for g in got:
+                if g["image_url"] in seen["urls"]:
+                    dupes += 1
+                    continue
+                seen["urls"].add(g["image_url"])
+                refs.append({"url": g["image_url"], "origin": None,
+                             "engine": g.get("engine", "search"),
+                             "hash": hashlib.md5(
+                                 g["image_url"].encode()).hexdigest()})
             filtered = 0
         else:
-            refs, filtered = await _download_quality_refs(
-                str(tid), got, 4, start, "manual")
+            refs, filtered, dupes = await _download_quality_refs(
+                str(tid), got, start, "manual", seen)
         for i, ref in enumerate(refs):
             session.add(Asset(
                 task_id=tid, page_index=start + i,
                 subject=subject, source_type="official", copyright_status="unknown",
-                hash=hashlib.md5(ref["url"].encode()).hexdigest(),
+                hash=ref.get("hash") or hashlib.md5(
+                    ref["url"].encode()).hexdigest(),
                 image_url=ref["url"], origin_url=ref["origin"],
                 model_version=ref["engine"],
                 is_illustration=False))
         await session.commit()
     await log_action(payload.actor, "ref_search",
-                     f"query={q} added={len(refs)} filtered={filtered}", task_id=str(tid))
-    return {"added": len(refs), "filtered": filtered, "query": q}
+                     f"query={q} added={len(refs)} filtered={filtered} "
+                     f"dupes={dupes}", task_id=str(tid))
+    return {"added": len(refs), "filtered": filtered, "dupes": dupes,
+            "query": q}
+
+
+# 手动上传参考图（2026-08-27 用户要求：搜图之外补充自选高清实图的上传渠道）
+_REF_UPLOAD_MAX_FILES = 20
+_REF_UPLOAD_MAX_BYTES = 15 * 1024 * 1024  # 单张 15MB
+
+
+@router.post("/api/tasks/{task_id}/ref_upload")
+async def ref_upload(task_id: str, actor: str = Form("anonymous"),
+                     subject: str = Form(""),
+                     files: list[UploadFile] = File(...)):
+    """手动上传参考图：用户自选的实图直接存为 official 参考图（用户主动挑选
+    即认可质量，不设分辨率下限；按内容 md5 与已有参考图/本批次排重；非图片
+    或超 15MB 的文件拒收）。compare 模式应带 subject（A:/B: 前缀）以进对应
+    参考图池。归属隔离：非属主非 admin → 404。"""
+    import hashlib
+    from src.models.assets import Asset
+    from src.pipeline.nodes import _persist_image, _image_size
+    from src.services.ownership import check_owner, get_actor
+    try:
+        tid = uuid.UUID(task_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid task_id")
+    if len(files) > _REF_UPLOAD_MAX_FILES:
+        raise HTTPException(status_code=400,
+                            detail=f"单次最多上传 {_REF_UPLOAD_MAX_FILES} 张")
+    added = dupes = rejected = 0
+    async with SessionLocal() as session:
+        uid, role = await get_actor(session, actor)
+        task = (await session.execute(
+            select(Task).where(Task.id == tid))).scalars().first()
+        if not task:
+            raise HTTPException(status_code=404, detail="task not found")
+        check_owner(task, uid, role)
+        tag = subject.strip() or "手动上传"
+        start = ((await session.execute(
+            select(func.max(Asset.page_index)).where(Asset.task_id == tid))
+        ).scalar_one_or_none() or 0) + 1
+        seen_hashes = set((await session.execute(
+            select(Asset.hash).where(Asset.task_id == tid,
+                                     Asset.source_type == "official",
+                                     Asset.hash.isnot(None)))).scalars().all())
+        for f in files:
+            data = await f.read()
+            if not data or len(data) > _REF_UPLOAD_MAX_BYTES:
+                rejected += 1
+                continue
+            if not _image_size(data):
+                rejected += 1
+                continue
+            h = hashlib.md5(data).hexdigest()
+            if h in seen_hashes:
+                dupes += 1
+                continue
+            seen_hashes.add(h)
+            path = _persist_image(str(tid), start + added, "ref_upload",
+                                  data, f.content_type or "image/png")
+            session.add(Asset(
+                task_id=tid, page_index=start + added,
+                subject=tag, source_type="official", copyright_status="unknown",
+                hash=h, image_url=path, origin_url=None,
+                model_version="upload", is_illustration=False))
+            added += 1
+        await session.commit()
+    await log_action(actor, "ref_upload",
+                     f"subject={tag} added={added} dupes={dupes} "
+                     f"rejected={rejected}", task_id=str(tid))
+    return {"added": added, "dupes": dupes, "rejected": rejected,
+            "subject": tag}
 
 
 def _normalize_image(data: bytes, target_size: tuple) -> bytes:

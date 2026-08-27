@@ -8,11 +8,11 @@ from src.models.assets import Asset
 from src.pipeline.nodes import node_entity_bind
 
 
-def _png_bytes(w, h):
+def _png_bytes(w, h, color=(200, 30, 30)):
     from io import BytesIO
     from PIL import Image
     buf = BytesIO()
-    Image.new("RGB", (w, h), (200, 30, 30)).save(buf, format="PNG")
+    Image.new("RGB", (w, h), color).save(buf, format="PNG")
     return buf.getvalue()
 
 
@@ -57,30 +57,29 @@ async def test_entity_bind_skips_search_for_general():
 
 
 @pytest.mark.asyncio
-async def test_entity_bind_filters_low_quality_and_keeps_topk():
-    """10 张候选：3 张达标（2 大 1 中），7 张小图 → 只保留 3 张达标图并本地化。"""
+async def test_entity_bind_keeps_all_passing_no_cap():
+    """无最高限制（2026-08-27）：10 张候选全部达标 → 10 张全保留（旧逻辑截前 6）。"""
     tid = await _make_task(mode="single")
     cands = _candidates(10, None)
 
     async def fetch(url):
         n = int(url.rsplit("/", 1)[1].split(".")[0])
-        data = {0: _BIG, 2: _BIG, 4: _MID}.get(n, _SMALL)
-        return data, "image/png"
+        return _png_bytes(1200, 1600, (n * 20 % 255, 30, 30)), "image/png"
 
     with patch("src.gateway.image_search.search_image",
                new=AsyncMock(return_value=cands)) as mock_search, \
          patch("src.pipeline.nodes.fetch_image_bytes", new=fetch):
         out = await node_entity_bind({"task_id": tid})
-    # 高清搜索词
     args, kwargs = mock_search.call_args
     assert args[0].endswith(" 高清") and kwargs["count"] == 10
-    assert out["searched_images"] == 3
-    assert out["ref_filtered"] == 7
+    assert out["searched_images"] == 10
+    assert out["ref_filtered"] == 0
+    assert out["ref_dupes"] == 0
     async with SessionLocal() as session:
         assets = (await session.execute(
             select(Asset).where(Asset.task_id == tid)
             .order_by(Asset.page_index))).scalars().all()
-        assert len(assets) == 3
+        assert len(assets) == 10
         for a in assets:
             assert a.source_type == "official"
             assert a.image_url.startswith("/static/generated/")  # 已本地化
@@ -88,8 +87,39 @@ async def test_entity_bind_filters_low_quality_and_keeps_topk():
 
 
 @pytest.mark.asyncio
+async def test_entity_bind_filters_low_quality_and_dedupes():
+    """最低限制 + 排重 + 保底：3 张达标 distinct 保留；1 张内容与第 1 张重复被
+    排重；其余小图过滤，但因达标不足 6 张，用 3 张小图补齐保底（最少 6 张）。"""
+    tid = await _make_task(mode="single")
+    cands = _candidates(10, None)
+    big0 = _png_bytes(1200, 1600, (10, 30, 30))
+
+    async def fetch(url):
+        n = int(url.rsplit("/", 1)[1].split(".")[0])
+        data = {0: big0, 2: _png_bytes(1200, 1600, (40, 30, 30)),
+                4: _MID, 6: big0}.get(n, _SMALL)  # 6 与 0 内容相同 → 排重
+        return data, "image/png"
+
+    with patch("src.gateway.image_search.search_image",
+               new=AsyncMock(return_value=cands)), \
+         patch("src.pipeline.nodes.fetch_image_bytes", new=fetch):
+        out = await node_entity_bind({"task_id": tid})
+    assert out["searched_images"] == 6   # 3 达标 + 3 张次优补齐保底
+    assert out["ref_filtered"] == 6
+    assert out["ref_dupes"] == 1
+    async with SessionLocal() as session:
+        assets = (await session.execute(
+            select(Asset).where(Asset.task_id == tid))).scalars().all()
+        assert len(assets) == 6
+        localized = [a for a in assets if a.image_url.startswith("/static/generated/")]
+        fallback = [a for a in assets if a.image_url.startswith("http://img.test/")]
+        assert len(localized) == 3 and len(fallback) == 3
+        assert len({a.hash for a in localized}) == 3  # 达标图内容 md5 两两不同
+
+
+@pytest.mark.asyncio
 async def test_entity_bind_fallback_when_all_low_quality():
-    """全部不达标：回退原地址前 6 张，参考图不为空。"""
+    """全部不达标：用次优图补齐保底 6 张（最少 6 张，低质图仅在保底时使用）。"""
     tid = await _make_task(mode="single")
     cands = _candidates(10, None)
 
@@ -107,13 +137,14 @@ async def test_entity_bind_fallback_when_all_low_quality():
             select(Asset).where(Asset.task_id == tid))).scalars().all()
         assert len(assets) == 6
         for a in assets:
-            assert a.image_url.startswith("http://img.test/")  # 回退保留原地址
+            assert a.image_url.startswith("http://img.test/")  # 保底图保留原地址
             assert a.origin_url is None
 
 
 @pytest.mark.asyncio
 async def test_entity_bind_compare_hd_queries():
-    """compare 模式：每主体两组搜索词均带「高清」，mock 模式下不过滤直接保留。"""
+    """compare 模式：每主体两组搜索词均带「高清」；mock 模式下不下载不过滤，
+    但按 URL 排重——4 组搜回同一批 URL，只有第 1 组的 6 张被保留。"""
     tid = await _make_task(mode="compare", query="A校 vs B校 怎么选")
     cands = _candidates(6, None)
     with patch("src.pipeline.nodes._split_compare_subjects",
@@ -125,9 +156,10 @@ async def test_entity_bind_compare_hd_queries():
     queries = [c.args[0] for c in mock_search.call_args_list]
     assert queries == ["A校 高清", "A校 细节 侧面 高清", "B校 高清", "B校 细节 侧面 高清"]
     assert out["subjects"] == ["A校", "B校"]
-    # mock：每组 6 张候选按 keep 截断 3/2/3/2 = 10 张
-    assert out["searched_images"] == 10
+    # mock：URL 排重后仅首组 6 张入库，其余 18 张判重跳过
+    assert out["searched_images"] == 6
     assert out["ref_filtered"] == 0
+    assert out["ref_dupes"] == 18
 
 
 # ---------- 参考图人工维护端点 ----------
@@ -213,7 +245,9 @@ async def test_ref_search_appends_quality_assets():
 
     async def fetch(url):
         n = int(url.rsplit("/", 1)[1].split(".")[0])
-        return (_BIG if n < 5 else _SMALL), "image/png"
+        if n < 5:
+            return _png_bytes(1200, 1600, (n * 40 + 10, 30, 30)), "image/png"
+        return _SMALL, "image/png"
 
     with patch("src.gateway.image_search.search_image",
                new=AsyncMock(return_value=cands)) as mock_search, \
@@ -223,12 +257,13 @@ async def test_ref_search_appends_quality_assets():
                               json={"actor": owner, "query": "炸锅 外观 高清"})
             assert r.status_code == 200
             body = r.json()
-    assert body["added"] == 4 and body["filtered"] == 3  # 5 达标取前 4
+    assert body["added"] == 6 and body["filtered"] == 3  # 5 张达标 + 1 张次优补齐保底 6
+    assert body["dupes"] == 0
     assert mock_search.call_args.args[0] == "炸锅 外观 高清"
     async with SessionLocal() as s:
         assets = (await s.execute(
             select(Asset).where(Asset.task_id == tid))).scalars().all()
-        assert len(assets) == 4
+        assert len(assets) == 6
         assert all(a.subject == "炸锅 外观 高清" for a in assets)
 
 
@@ -239,4 +274,56 @@ async def test_ref_search_non_owner_404():
     tid = await _owned_task(owner)
     async with _client() as ac:
         r = await ac.post(f"/api/tasks/{tid}/ref_search", json={"actor": other})
+        assert r.status_code == 404
+
+
+# ---------- 手动上传参考图 ----------
+
+@pytest.mark.asyncio
+async def test_ref_upload_adds_dedupes_and_rejects():
+    """上传 3 个文件：2 张 distinct 图入库；1 张与其中一张内容重复被排重；
+    再传 1 个非图文件被拒收。"""
+    owner = await _make_user(role="admin")
+    tid = await _owned_task(owner)
+    img1 = _png_bytes(1000, 800, (11, 22, 33))
+    img2 = _png_bytes(1000, 800, (44, 55, 66))
+    files = [
+        ("files", ("a.png", img1, "image/png")),
+        ("files", ("b.png", img2, "image/png")),
+        ("files", ("c.png", img1, "image/png")),   # 与 a 内容重复
+        ("files", ("d.txt", b"not an image", "text/plain")),
+    ]
+    async with _client() as ac:
+        r = await ac.post(f"/api/tasks/{tid}/ref_upload",
+                          data={"actor": owner, "subject": "A:某校"}, files=files)
+        assert r.status_code == 200
+        body = r.json()
+    assert body["added"] == 2 and body["dupes"] == 1 and body["rejected"] == 1
+    assert body["subject"] == "A:某校"
+    async with SessionLocal() as s:
+        assets = (await s.execute(
+            select(Asset).where(Asset.task_id == tid))).scalars().all()
+        assert len(assets) == 2
+        for a in assets:
+            assert a.source_type == "official"
+            assert a.subject == "A:某校"
+            assert a.model_version == "upload"
+            assert a.image_url.startswith("/static/generated/")
+    # 再次上传同一批 → 与库存 hash 撞重，全部排重
+    async with _client() as ac:
+        r = await ac.post(f"/api/tasks/{tid}/ref_upload",
+                          data={"actor": owner},
+                          files=[("files", ("a2.png", img1, "image/png"))])
+        assert r.json()["dupes"] == 1 and r.json()["added"] == 0
+
+
+@pytest.mark.asyncio
+async def test_ref_upload_non_owner_404():
+    owner = await _make_user(role="admin")
+    other = await _make_user(role="C")
+    tid = await _owned_task(owner)
+    async with _client() as ac:
+        r = await ac.post(
+            f"/api/tasks/{tid}/ref_upload", data={"actor": other},
+            files=[("files", ("a.png", _png_bytes(1000, 800), "image/png"))])
         assert r.status_code == 404

@@ -9,6 +9,7 @@ const TasksView = {
       nodes: [], timer: null, es: null, sseTimer: null,
       live: {},              // task_id -> 内存实时态（current_node/debug/imgs）
       detail: null, detailError: '', retrying: false,
+      uploadSubject: '',  // 手动上传参考图的标注（compare 模式 A:/B: 前缀）
       fixMode: false, fixMarks: {}, fixing: false,   // 创建者自助修正（定点标记+自动重生成）
       selected: {},           // 勾选的任务 id -> true（仅终态任务可勾选，用于批量移入回收站）
       exportJob: null, exportTimer: null,   // 任务式导出进度 {id,status,total,done,detail}
@@ -196,7 +197,7 @@ const TasksView = {
     async researchRefs() {
       const t = this.detailTask || {};
       const def = (t.query || '') + ' 高清';
-      const q = prompt('输入参考图搜索词（搜 8 张，质量过滤后保留 4 张追加）：', def);
+      const q = prompt('输入参考图搜索词（搜 8 张，达最低分辨率的全保留并自动排重）：', def);
       if (q === null || !q.trim()) return;
       const body = { actor: this.actorName, query: q.trim() };
       if (t.mode === 'compare') {
@@ -217,9 +218,47 @@ const TasksView = {
       try {
         const r = await api.post(`/api/tasks/${t.id}/ref_search`, body);
         alert(`已追加 ${r.added} 张参考图` + (r.filtered ? `（过滤低质 ${r.filtered} 张）` : '') +
+          (r.dupes ? `（重复跳过 ${r.dupes} 张）` : '') +
           (body.subject ? `，标注「${body.subject}」` : ''));
         await this.open(this.detailTask);
       } catch (e) { alert('重搜失败：' + e.message); }
+    },
+    triggerRefUpload() {
+      // compare 模式先问标注（生图按 A:/B: 前缀分配参考图池），再打开文件选择
+      const t = this.detailTask || {};
+      this.uploadSubject = '';
+      if (t.mode === 'compare') {
+        const tags = [...new Set(this.refAssets
+          .map(a => a.subject).filter(s => s && /^(A|B):/.test(s)))];
+        const hint = tags.length
+          ? tags.map((s, i) => `${i + 1}. ${s}`).join('\n')
+          : '（当前无 A:/B: 标注）';
+        const pick = prompt(
+          '对比模式需标注上传图片的标的（生图按 A:/B: 前缀分配参考图池）：\n' + hint +
+          '\n\n输入编号选择，或直接输入标注（如 A:小米17 Pro）：',
+          tags[0] || 'A:');
+        if (pick === null || !pick.trim()) return;
+        const idx = parseInt(pick.trim(), 10);
+        this.uploadSubject = (idx >= 1 && idx <= tags.length) ? tags[idx - 1] : pick.trim();
+      }
+      this.$refs.refFileInput.value = '';
+      this.$refs.refFileInput.click();
+    },
+    async uploadRefs(e) {
+      const files = Array.from(e.target.files || []);
+      if (!files.length || !this.detailTask) return;
+      const fd = new FormData();
+      fd.append('actor', this.actorName);
+      fd.append('subject', this.uploadSubject || '');
+      files.forEach(f => fd.append('files', f));
+      try {
+        const r = await api.postForm(`/api/tasks/${this.detailTask.id}/ref_upload`, fd);
+        alert(`已上传 ${r.added} 张参考图` +
+          (r.dupes ? `（重复跳过 ${r.dupes} 张）` : '') +
+          (r.rejected ? `（非图片/超限拒收 ${r.rejected} 张）` : '') +
+          (r.subject ? `，标注「${r.subject}」` : ''));
+        await this.open(this.detailTask);
+      } catch (err) { alert('上传失败：' + err.message); }
     },
     openZoom(a, isRef) {
       const list = this.zoomItems();
@@ -249,7 +288,10 @@ const TasksView = {
     },
     async startGen() {
       if (!this.detailTask) return;
-      if (!confirm('确认正文、分页文案与参考图无误，开始生图？\n\n生图是最贵步骤（每任务 6 张）。确认前可先增删/重搜参考图；放行后自动完成生图、OCR、校验并进入审核。')) return;
+      // 实图保底 6 张（2026-08-27）：不足时提示先重搜/上传补足，不强制拦截
+      const warn = (this.detailTask.mode !== 'general' && this.refAssets.length < 6)
+        ? `⚠ 当前参考图仅 ${this.refAssets.length} 张（少于 6 张），建议先「重搜/上传参考图」补足。\n\n` : '';
+      if (!confirm(warn + '确认正文、分页文案与参考图无误，开始生图？\n\n生图是最贵步骤（每任务 6 张）。确认前可先重搜/上传/删除参考图；放行后自动完成生图、OCR、校验并进入审核。')) return;
       this.retrying = true;
       try {
         await api.post(`/api/tasks/${this.detailTask.id}/start_gen?actor=` + encodeURIComponent(this.actorName));
@@ -419,7 +461,8 @@ const TasksView = {
           </div>
 
           <div v-if="canStartGen" class="card" style="margin:12px 0;border:1px solid #f59e0b">
-            <p style="margin:0"><b>待生图确认</b>：<span class="muted">正文、分页文案与实景参考图已就绪。请检查下方内容：参考图可「重搜/删除」调整；确认无误后点「▶ 确认并开始生图」，系统将生成 6 张配图并完成校验进入审核。</span></p>
+            <p style="margin:0"><b>待生图确认</b>：<span class="muted">正文、分页文案与实景参考图已就绪。请检查下方内容：参考图可「重搜/上传/删除」调整；确认无误后点「▶ 确认并开始生图」，系统将生成 6 张配图并完成校验进入审核。</span></p>
+            <p v-if="detailTask.mode !== 'general' && refAssets.length < 6" style="margin:6px 0 0;color:#c00">⚠ 参考图仅 {{ refAssets.length }} 张（少于保底 6 张），建议先「重搜/上传参考图」补足再生图。</p>
           </div>
 
           <div v-if="fixMode" class="card" style="margin:12px 0;border:1px solid #f59e0b">
@@ -495,7 +538,9 @@ const TasksView = {
           </template>
 
           <h3>实景参考图（{{ refAssets.length }}）<span class="muted" style="font-weight:normal;font-size:13px">仅作生图参考，不随内容交付</span>
-            <button class="btn btn-outline btn-sm" style="margin-left:10px" @click="researchRefs">↻ 重搜参考图</button></h3>
+            <button class="btn btn-outline btn-sm" style="margin-left:10px" @click="researchRefs">↻ 重搜参考图</button>
+            <button class="btn btn-outline btn-sm" style="margin-left:6px" @click="triggerRefUpload">⤒ 上传参考图</button>
+            <input ref="refFileInput" type="file" accept="image/*" multiple style="display:none" @change="uploadRefs"></h3>
           <div class="img-grid" v-if="refAssets.length">
             <figure v-for="a in refAssets" :key="a.id">
               <img :src="a.display_url || a.image_url" loading="lazy" alt="" @click="openZoom(a, true)">
@@ -503,7 +548,7 @@ const TasksView = {
                 <a href="javascript:;" style="color:#c00;margin-left:6px" title="删除此参考图" @click="delRef(a)">删除</a></figcaption>
             </figure>
           </div>
-          <p v-else class="muted">暂无参考图，可点「重搜参考图」手动搜索。</p>
+          <p v-else class="muted">暂无参考图，可点「重搜参考图」搜索或「上传参考图」手动上传。</p>
 
           <template v-if="detail.claims && detail.claims.length">
             <h3>事实点</h3>
