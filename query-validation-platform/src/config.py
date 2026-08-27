@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     openai_image_api_key: str = "sk-xxx" # OpenAI 图生 key
     image_model: str = "gpt-image-2"
     image_size: str = "1152x1536"        # 竖版（1152x1536，3:4）
+    # 生图质量档（2026-08-27 对齐官方建议：中文信息图文字渲染用 high）；
+    # 网关不支持该参数时自动降级去掉重试（见 image_gen._post_with_quality_fallback）
+    image_quality: str = "high"
     mock_image_gen: bool = False         # 开发阶段模拟生图（不调 API、不花钱）
     # 搜实景图 provider（openserp 免费默认 / doubao_ark / bing_api 预留）
     image_search_provider: str = "openserp"

@@ -64,13 +64,34 @@ async def generate_image(prompt: str, size: str = None,
             await asyncio.sleep(2 * (2 ** attempt))
 
 
+async def _post_with_quality_fallback(client: httpx.AsyncClient, url: str,
+                                      payload: dict, files=None) -> httpx.Response:
+    """带 quality 参数发请求；网关（如 openox 转发）不认识该参数返回 400 时，
+    去掉 quality 重试一次并留痕——避免升级 quality=high 后在不支持的网关上整体生图失败。"""
+    if settings.image_quality:
+        payload["quality"] = settings.image_quality
+
+    def _kwargs(p: dict) -> dict:
+        if files is None:
+            return {"json": p, "headers": _headers()}
+        return {"data": p, "files": files, "headers": _headers()}
+
+    resp = await client.post(url, **_kwargs(payload))
+    if resp.status_code >= 400 and "quality" in payload:
+        print(f"[image_gen] 网关拒绝 quality 参数（{resp.status_code}），去掉后重试一次",
+              flush=True)
+        payload.pop("quality")
+        resp = await client.post(url, **_kwargs(payload))
+    return resp
+
+
 async def _generate(prompt: str, size: str) -> dict:
     """文生图：POST /v1/images/generations"""
     url = f"{settings.openai_image_base_url}/images/generations"
     payload = {"model": IMAGE_MODEL, "prompt": prompt, "size": size, "n": 1,
                "response_format": "url"}
     async with httpx.AsyncClient(timeout=300) as client:
-        resp = await client.post(url, json=payload, headers=_headers())
+        resp = await _post_with_quality_fallback(client, url, payload)
         if resp.status_code >= 400:
             raise RuntimeError(f"image gen failed ({resp.status_code}): {resp.text[:400]}")
         data = resp.json()
@@ -94,7 +115,7 @@ async def _edit_with_references(prompt: str, reference_image_urls: list[str],
     data = {"model": IMAGE_MODEL, "prompt": prompt, "size": size,
             "n": "1", "response_format": "url"}
     async with httpx.AsyncClient(timeout=300) as client:
-        resp = await client.post(url, data=data, files=files, headers=_headers())
+        resp = await _post_with_quality_fallback(client, url, data, files=files)
         if resp.status_code >= 400:
             raise RuntimeError(f"image edit failed ({resp.status_code}): {resp.text[:400]}")
         j = resp.json()

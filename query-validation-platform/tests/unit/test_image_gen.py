@@ -43,3 +43,62 @@ async def test_mock_image_gen_returns_placeholder(monkeypatch):
     assert r["image_url"].startswith("data:image/svg+xml")
     assert r["hash"]
     gen.assert_not_called()
+
+
+class _FakeResp:
+    def __init__(self, status, payload=None):
+        self.status_code = status
+        self._payload = payload or {}
+        self.text = "bad request"
+
+    def json(self):
+        return self._payload
+
+
+def _fake_client_cls(seen, reject_quality: bool):
+    """模拟网关：reject_quality=True 时对带 quality 的请求返回 400。"""
+    class FakeClient:
+        def __init__(self, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, **kwargs):
+            payload = kwargs.get("json") or kwargs.get("data")
+            seen.append(dict(payload))
+            if reject_quality and "quality" in payload:
+                return _FakeResp(400)
+            return _FakeResp(200, {"data": [{"url": "https://img/x.png"}]})
+
+    return FakeClient
+
+
+@pytest.mark.asyncio
+async def test_quality_param_sent_when_supported(monkeypatch):
+    """quality=high（2026-08-27 官方建议）正常下发给支持的网关。"""
+    monkeypatch.setattr(image_gen.settings, "image_quality", "high")
+    monkeypatch.setattr(image_gen.settings, "openai_image_base_url", "https://gw.example/v1")
+    seen = []
+    monkeypatch.setattr(image_gen.httpx, "AsyncClient",
+                        _fake_client_cls(seen, reject_quality=False))
+    r = await image_gen._generate("p", "1152x1536")
+    assert r["image_url"] == "https://img/x.png"
+    assert len(seen) == 1 and seen[0]["quality"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_quality_param_fallback_on_400(monkeypatch):
+    """网关不认识 quality 返回 400 时，自动去掉该参数重试一次，不致整体生图失败。"""
+    monkeypatch.setattr(image_gen.settings, "image_quality", "high")
+    monkeypatch.setattr(image_gen.settings, "openai_image_base_url", "https://gw.example/v1")
+    seen = []
+    monkeypatch.setattr(image_gen.httpx, "AsyncClient",
+                        _fake_client_cls(seen, reject_quality=True))
+    r = await image_gen._generate("p", "1152x1536")
+    assert r["image_url"] == "https://img/x.png"
+    assert len(seen) == 2
+    assert seen[0]["quality"] == "high" and "quality" not in seen[1]
