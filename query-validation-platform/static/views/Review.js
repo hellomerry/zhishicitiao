@@ -12,6 +12,7 @@ const ReviewView = {
       marks: {},            // 定点驳回标记 {"page:2": {item_type, page_index, reason}}
       zoom: null,           // 图片放大浏览 {src, title, text}
       qSort: 'default',     // 待审队列排序：default（后端顺序）/created（最新优先）/risk（风险优先）/mode
+      queueCollapsed: false, // 队列折叠：审内容时给主区让出全宽
       actRole: '',          // 实际审核用的会话角色（admin 审核时取任务 open_roles 之一）
     };
   },
@@ -155,9 +156,15 @@ const ReviewView = {
     <template v-else>
       <p v-if="error" class="form-error">{{ error }}</p>
       <p v-if="msg" class="form-ok">{{ msg }}</p>
-      <div class="review-layout">
-        <div class="card review-queue">
-          <h2>待审队列 · {{ role }}（{{ roleName(role) }}）<button class="btn btn-outline btn-sm" style="float:right" @click="loadQueue">刷新</button></h2>
+      <div class="review-layout" :class="{'q-collapsed': queueCollapsed}">
+        <button v-if="queueCollapsed" class="btn btn-outline btn-sm q-expand" @click="queueCollapsed = false" title="显示待审队列">待审队列 »</button>
+        <div v-show="!queueCollapsed" class="card review-queue">
+          <h2>待审队列 · {{ role }}（{{ roleName(role) }}）
+            <span style="float:right">
+              <button class="btn btn-outline btn-sm" @click="loadQueue">刷新</button>
+              <button class="btn btn-outline btn-sm" style="margin-left:6px" title="折叠队列，审核区全宽" @click="queueCollapsed = true">«</button>
+            </span>
+          </h2>
           <select v-model="qSort" style="width:auto;margin-bottom:8px">
             <option value="default">默认顺序</option>
             <option value="created">最新优先</option>
