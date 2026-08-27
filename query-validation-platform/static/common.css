@@ -205,20 +205,26 @@ input, select, textarea { font-size: 15px; }
 .article-body { font-size: 15.5px; }
 .plain-list { font-size: 15px; }
 
-/* 图片放大浏览 */
-.lb-mask { position: fixed; inset: 0; background: rgba(10, 12, 18, .78); z-index: 500; display: flex; align-items: center; justify-content: center; padding: 24px; }
-.lb-box { position: relative; max-width: 860px; max-height: 92vh; background: var(--card); border-radius: 12px; overflow: auto; }
-.lb-img { max-width: 100%; max-height: 70vh; object-fit: contain; display: block; background: #14161c; margin: 0 auto; }
-.lb-caption { padding: 14px 18px; font-size: 15px; line-height: 1.7; }
-.lb-caption p { margin: 6px 0 0; color: var(--muted); white-space: pre-wrap; }
-.lb-close { position: absolute; top: 10px; right: 10px; width: 34px; height: 34px; border: none; border-radius: 50%; background: rgba(0, 0, 0, .55); color: #fff; font-size: 16px; cursor: pointer; z-index: 2; }
-.lb-close:hover { background: rgba(0, 0, 0, .8); }
+/* 图片全屏查看器（2026-08-27 重做：整屏 + 缩放 + 拖动平移 + 浏览器全屏） */
+.lb-mask { position: fixed; inset: 0; background: rgba(8, 10, 14, .94); z-index: 500; display: flex; flex-direction: column; }
+.lb-topbar { display: flex; align-items: center; gap: 12px; padding: 8px 14px; color: #fff; background: rgba(255, 255, 255, .06); font-size: 15px; flex: none; }
+.lb-topbar b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lb-tools { margin-left: auto; display: flex; align-items: center; gap: 6px; flex: none; }
+.lb-tools button { background: rgba(255, 255, 255, .12); border: none; color: #fff; border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 14px; }
+.lb-tools button:hover { background: rgba(255, 255, 255, .25); }
+.lb-scale { min-width: 52px; text-align: center; cursor: pointer; font-size: 13px; color: #dfe3ea; }
+.lb-stage { flex: 1; overflow: auto; display: flex; align-items: center; justify-content: center; min-height: 0; }
+.lb-stage.zoomed { display: block; cursor: grab; }
+.lb-stage.zoomed:active { cursor: grabbing; }
+.lb-img { display: block; margin: 0 auto; background: #14161c; user-select: none; object-fit: contain; }
+.lb-caption { flex: none; padding: 8px 14px; font-size: 14px; line-height: 1.6; color: #c8cdd6; background: rgba(255, 255, 255, .04); max-height: 20vh; overflow: auto; }
+.lb-caption p { margin: 0; white-space: pre-wrap; }
 .img-grid img { cursor: zoom-in; }
 
 /* 放大预览翻页 */
-.lb-nav { position: absolute; top: 38%; width: 40px; height: 56px; border: none; border-radius: 8px; background: rgba(0, 0, 0, .45); color: #fff; font-size: 30px; line-height: 1; cursor: pointer; z-index: 2; }
+.lb-nav { position: absolute; top: 50%; transform: translateY(-50%); width: 40px; height: 56px; border: none; border-radius: 8px; background: rgba(0, 0, 0, .45); color: #fff; font-size: 30px; line-height: 1; cursor: pointer; z-index: 2; }
 .lb-nav:hover:not(:disabled) { background: rgba(0, 0, 0, .75); }
 .lb-nav:disabled { opacity: .25; cursor: default; }
 .lb-prev { left: 10px; }
 .lb-next { right: 10px; }
-.lb-counter { float: right; color: var(--muted); font-size: 13px; font-weight: normal; }
+.lb-counter { color: #c8cdd6; font-size: 13px; font-weight: normal; flex: none; }
