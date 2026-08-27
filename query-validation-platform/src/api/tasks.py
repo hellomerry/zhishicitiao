@@ -312,6 +312,70 @@ async def task_detail(task_id: str, actor: str = ""):
         }
 
 
+class FixMarkIn(BaseModel):
+    item_type: str        # page=分页文案 / image=交付配图
+    page_index: int       # 1-6
+    reason: str = ""
+
+
+class FixIn(BaseModel):
+    actor: str = "anonymous"
+    marks: list[FixMarkIn] = []
+
+
+@router.post("/api/tasks/{task_id}/fix")
+async def fix_task(task_id: str, payload: FixIn):
+    """创建者自助修正（2026-08-27）：任务创建者（或 admin）对自己的任务做定点
+    驳回标记并自动触发重生成，不必再等审核员驳回。
+
+    复用审核驳回的同一套机制：写 reject_marks（role="creator" 标识来源）→
+    enqueue_regen 走 partial_regen（只重做标记项，其余已认可内容保留）→
+    重生成后任务回到审核队列终审。权限按归属隔离严格校验（非属主 404，
+    审核员改别人的任务请走 /api/review/action）。
+    """
+    from src.models.review import RejectMark
+    from src.services.ownership import get_actor, check_owner
+    from src.services.regen import enqueue_regen
+    try:
+        tid = uuid.UUID(task_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid task_id")
+    if not payload.marks:
+        raise HTTPException(status_code=400, detail="至少标记一项需要修正的内容")
+    for m in payload.marks:
+        if m.item_type not in ("page", "image") or not (1 <= m.page_index <= 6):
+            raise HTTPException(
+                status_code=400, detail=f"invalid mark: {m.item_type} P{m.page_index}")
+        if not m.reason.strip():
+            raise HTTPException(
+                status_code=400, detail=f"标记项 P{m.page_index} 必须填写问题说明")
+    async with SessionLocal() as session:
+        uid, role = await get_actor(session, payload.actor)
+        task = (await session.execute(select(Task).where(Task.id == tid))).scalars().first()
+        if not task:
+            raise HTTPException(status_code=404, detail="task not found")
+        check_owner(task, uid, role)  # 严格属主校验（不含 review 放行）
+        # 生产/排队中不可修正（会与在跑的流水线冲突）；failed 请用重试
+        if task.status not in ("review", "approved", "rejected"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"当前状态（{task.status}）不可修正：生产中任务请等待产出，失败任务请用重试")
+        for m in payload.marks:
+            session.add(RejectMark(
+                task_id=tid, role="creator", item_type=m.item_type,
+                page_index=m.page_index, reason=m.reason.strip()))
+        query = task.query
+        await session.commit()
+    auto = await enqueue_regen(tid)
+    items = "、".join(
+        f"{'文案' if m.item_type == 'page' else '配图'}P{m.page_index}"
+        for m in payload.marks)
+    await log_action(payload.actor, "fix_task",
+                     f"创建者自助修正（{items}）：{query[:50]}", task_id=tid)
+    return {"ok": True, "task_id": str(tid), "kind": auto["kind"],
+            "mark_count": auto["mark_count"]}
+
+
 @router.post("/api/tasks/{task_id}/retry")
 async def retry_task(task_id: str, actor: str = "anonymous"):
     """重试失败/被驳回的任务。

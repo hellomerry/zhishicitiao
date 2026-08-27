@@ -9,6 +9,7 @@ const TasksView = {
       nodes: [], timer: null, es: null, sseTimer: null,
       live: {},              // task_id -> 内存实时态（current_node/debug/imgs）
       detail: null, detailError: '', retrying: false,
+      fixMode: false, fixMarks: {}, fixing: false,   // 创建者自助修正（定点标记+自动重生成）
       selected: {},           // 勾选的任务 id -> true（仅终态任务可勾选，用于批量移入回收站）
       exportJob: null, exportTimer: null,   // 任务式导出进度 {id,status,total,done,detail}
       showExport: false,     // 导出弹窗开关（关闭不中断后台打包）
@@ -32,6 +33,15 @@ const TasksView = {
     },
     canRetry() {
       return this.detailTask && ['failed', 'rejected'].includes(this.detailTask.status);
+    },
+    canFix() {
+      // 创建者自助修正：终态任务（待审/已通过/已驳回）可定点标记问题项并自动重生成，
+      // 不必等审核员驳回；归属隔离保证非 admin 只能看到/修正自己的任务
+      return this.detailTask && ['review', 'approved', 'rejected'].includes(this.detailTask.status);
+    },
+    fixMarkList() {
+      return Object.values(this.fixMarks)
+        .sort((a, b) => a.page_index - b.page_index || (a.item_type > b.item_type ? 1 : -1));
     },
     canTrash() {
       return this.detailTask && ['review', 'approved', 'rejected', 'failed'].includes(this.detailTask.status);
@@ -114,8 +124,32 @@ const TasksView = {
     },
     async open(t) {
       this.detailError = ''; this.detail = null;
+      this.fixMode = false; this.fixMarks = {}; this.fixing = false;
       try { this.detail = await api.get(`/api/tasks/${t.id}/detail?actor=` + encodeURIComponent(this.actorName)); }
       catch (e) { this.detailError = e.message; }
+    },
+    fixKey(t, p) { return `${t}:${p}`; },
+    isFixMarked(t, p) { return !!this.fixMarks[this.fixKey(t, p)]; },
+    toggleFixMark(t, p) {
+      const k = this.fixKey(t, p);
+      const m = { ...this.fixMarks };
+      if (m[k]) delete m[k];
+      else m[k] = { item_type: t, page_index: p, reason: '' };
+      this.fixMarks = m;
+    },
+    async submitFix() {
+      if (!this.fixMarkList.length) { alert('请先在下方「分页文案/交付配图」里点「标问题」标记要修正的项'); return; }
+      const bad = this.fixMarkList.find(m => !m.reason.trim());
+      if (bad) { alert(`请填写 ${bad.item_type === 'page' ? '文案' : '配图'}P${bad.page_index} 的问题说明`); return; }
+      if (!confirm(`确定提交修正？\n\n仅自动重生成被标记的 ${this.fixMarkList.length} 项（其余已认可内容保留），重生成后任务回到审核队列终审。`)) return;
+      this.fixing = true;
+      try {
+        await api.post(`/api/tasks/${this.detailTask.id}/fix`, { actor: this.actorName, marks: this.fixMarkList });
+        this.fixMode = false; this.fixMarks = {};
+        await this.load();
+        await this.open(this.detailTask);
+      } catch (e) { alert('提交失败：' + e.message); }
+      finally { this.fixing = false; }
     },
     close() { this.detail = null; },
     pageCopyOf(i) {
@@ -362,9 +396,23 @@ const TasksView = {
           <h3>生产进度</h3>
           <steps-bar :nodes="nodes" :completed="detail.completed_nodes" :current="detailTask.status === 'failed' ? detail.current_node : (liveOfDetail && liveOfDetail.current_node) || detail.current_node" :failed="detailTask.status === 'failed'"></steps-bar>
 
-          <div v-if="canRetry || canTrash" style="margin:12px 0">
+          <div v-if="canRetry || canTrash || canFix" style="margin:12px 0">
             <button v-if="canRetry" class="btn btn-primary" :disabled="retrying" @click="retry">{{ retrying ? '处理中…' : retryLabel }}</button>
+            <button v-if="canFix" class="btn btn-outline" @click="fixMode = !fixMode; fixMarks = {}">{{ fixMode ? '取消修正' : '✎ 标记修正' }}</button>
             <button v-if="canTrash" class="btn btn-outline" @click="trashTask">🗑 移入回收站</button>
+          </div>
+
+          <div v-if="fixMode" class="card" style="margin:12px 0;border:1px solid #f59e0b">
+            <p style="margin:0 0 8px"><b>自助修正</b>：<span class="muted">在下方「分页文案 / 交付配图」中点「⚑ 标问题」标记有问题的项并填写说明，提交后仅重生成标记项（其余内容保留），完成后任务回到审核队列终审。</span></p>
+            <template v-if="fixMarkList.length">
+              <div v-for="m in fixMarkList" :key="m.item_type + m.page_index" style="display:flex;align-items:center;gap:8px;margin:6px 0">
+                <span class="tag tag-yellow" style="white-space:nowrap">{{ m.item_type === 'page' ? '文案' : '配图' }} P{{ m.page_index }}</span>
+                <input v-model="m.reason" placeholder="该项的问题说明（必填）" style="flex:1">
+                <button class="btn btn-outline btn-sm" @click="toggleFixMark(m.item_type, m.page_index)">移除</button>
+              </div>
+            </template>
+            <p v-else class="muted" style="margin:6px 0">尚未标记任何项。</p>
+            <button class="btn btn-primary" style="margin-top:8px" :disabled="fixing" @click="submitFix">{{ fixing ? '提交中…' : '提交修正（自动重生成 ' + fixMarkList.length + ' 项）' }}</button>
           </div>
 
           <template v-if="detail.reject_marks && detail.reject_marks.length">
@@ -387,19 +435,28 @@ const TasksView = {
           </template>
 
           <template v-if="detail.page_copies && detail.page_copies.length">
-            <h3>分页文案</h3>
-            <div v-for="p in detail.page_copies" :key="p.page_index" class="page-copy">
+            <h3>分页文案<span v-if="fixMode" class="muted" style="font-weight:normal;font-size:13px">（点「标问题」标记要修正的页）</span></h3>
+            <div v-for="p in detail.page_copies" :key="p.page_index" class="page-copy" :style="fixMode ? 'display:flex;align-items:flex-start;gap:10px' : ''">
               <b>P{{ p.page_index }}</b>
-              <p class="muted">{{ p.body }}</p>
+              <p class="muted" :style="fixMode ? 'flex:1;margin:0' : ''">{{ p.body }}</p>
+              <button v-if="fixMode" class="btn btn-sm" :class="isFixMarked('page', p.page_index) ? 'btn-danger' : 'btn-outline'"
+                      @click="toggleFixMark('page', p.page_index)">
+                {{ isFixMarked('page', p.page_index) ? '✓ 已标记' : '⚑ 标问题' }}
+              </button>
             </div>
           </template>
 
           <template v-if="genAssets.length">
-            <h3>交付配图（{{ genAssets.length }}）</h3>
+            <h3>交付配图（{{ genAssets.length }}）<span v-if="fixMode" class="muted" style="font-weight:normal;font-size:13px">（点「标问题」标记要修正的图）</span></h3>
             <div class="img-grid">
               <figure v-for="a in genAssets" :key="a.id">
                 <img :src="a.display_url || a.image_url" loading="lazy" alt="" @click="openZoom(a, false)">
-                <figcaption class="muted">P{{ a.page_index }} · <span v-if="a.version_no > 1" class="tag tag-blue">修正版 第{{ a.version_no }}版</span><span v-else>初版</span></figcaption>
+                <figcaption class="muted">P{{ a.page_index }} · <span v-if="a.version_no > 1" class="tag tag-blue">修正版 第{{ a.version_no }}版</span><span v-else>初版</span>
+                  <button v-if="fixMode" class="btn btn-sm" :class="isFixMarked('image', a.page_index) ? 'btn-danger' : 'btn-outline'"
+                          style="margin-left:6px" @click.stop="toggleFixMark('image', a.page_index)">
+                    {{ isFixMarked('image', a.page_index) ? '✓ 已标记' : '⚑ 标问题' }}
+                  </button>
+                </figcaption>
               </figure>
             </div>
           </template>
