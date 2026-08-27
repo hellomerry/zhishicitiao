@@ -410,7 +410,9 @@ const TasksView = {
               <figure v-for="a in historyAssets" :key="a.id">
                 <img :src="a.display_url || a.image_url" loading="lazy" alt="" @click="openZoom(a, false)">
                 <figcaption class="muted">P{{ a.page_index }} · 历史 第{{ a.version_no }}版
-                  <a href="javascript:;" style="color:#06c;margin-left:6px" title="把此版本设为正式版" @click="activateAsset(a)">设为正式</a></figcaption>
+                  <a href="javascript:;" style="color:#06c;margin-left:6px" title="把此版本设为正式版" @click="activateAsset(a)">设为正式</a>
+                  <div v-if="a.reject_reasons && a.reject_reasons.length" style="font-size:12px;color:#d97706;line-height:1.5;white-space:normal" title="该版本被驳回修改的原因">驳回：{{ a.reject_reasons.join('；') }}</div>
+                </figcaption>
               </figure>
             </div>
           </template>

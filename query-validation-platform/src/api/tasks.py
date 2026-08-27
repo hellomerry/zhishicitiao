@@ -177,7 +177,7 @@ async def task_detail(task_id: str, actor: str = ""):
     from src.models.review import RiskClassification, ReviewSession, ReviewAction
     from src.api.review import REVIEW_ROLES
     from src.services.ownership import check_owner, get_actor
-    from datetime import datetime, timezone
+    from datetime import datetime, timezone, timedelta
     try:
         tid = uuid.UUID(task_id)
     except ValueError:
@@ -246,12 +246,14 @@ async def task_detail(task_id: str, actor: str = ""):
                         {"id": rs.reviewer_id})).scalar_one_or_none()
             review_status.append(entry)
         from src.models.review import RejectMark
-        marks = (await session.execute(
-            select(RejectMark).where(RejectMark.task_id == tid,
-                                     RejectMark.status == "open")
-            .order_by(RejectMark.page_index))).scalars().all()
-        # 每张 AI 生成图的版本序号（同页内按生成时间排序）：前端区分初版/修正版
+        all_marks = (await session.execute(
+            select(RejectMark).where(RejectMark.task_id == tid)
+            .order_by(RejectMark.created_at))).scalars().all()
+        marks = [m for m in all_marks if m.status == "open"]
+        # 每张 AI 生成图的版本序号（同页内按生成时间排序）：前端区分初版/修正版；
+        # 被替换的旧版同时归因驳回原因：驳回标记时间落在该版与下一版生成时间之间
         _version_map: dict = {}
+        _reason_map: dict = {}
         _by_page: dict = {}
         for a in assets:
             if a.source_type == "ai_generated":
@@ -261,6 +263,16 @@ async def task_detail(task_id: str, actor: str = ""):
                                       .replace(tzinfo=timezone.utc), str(x.id)))
             for _i, _a in enumerate(_rows, start=1):
                 _version_map[_a.id] = _i
+                if _i >= len(_rows):
+                    continue  # 最新版未被替换，无驳回归因
+                _lo = _a.created_at or datetime.min.replace(tzinfo=timezone.utc)
+                _hi = (_rows[_i].created_at or _lo) + timedelta(seconds=60)
+                _reason_map[_a.id] = [
+                    ("文案" if m.item_type == "page" else "配图") + "："
+                    + (m.reason or "")
+                    for m in all_marks
+                    if m.page_index == _a.page_index and m.created_at
+                    and _lo <= m.created_at <= _hi]
         return {
             "task": {
                 "id": str(task.id),
@@ -285,6 +297,7 @@ async def task_detail(task_id: str, actor: str = ""):
                         "subject": a.subject, "source_type": a.source_type,
                         "is_active": a.is_active,
                         "version_no": _version_of(a, _version_map),
+                        "reject_reasons": _reason_map.get(a.id, []),
                         "image_url": a.image_url,
                         "display_url": f"/api/assets/{a.id}/image"} for a in assets],
             "claims": [{"claim_text": c.claim_text, "risk_level": c.risk_level,

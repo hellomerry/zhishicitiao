@@ -411,6 +411,9 @@ async def test_activate_switches_active_version_and_rebuilds_checks():
                     key=lambda x: x["version_no"])
         assert [a["version_no"] for a in p3] == [1, 2]
         assert p3[0]["is_active"] is True and p3[1]["is_active"] is False
+        # 被替换的旧版带驳回归因（标记时间落在旧版与重出版之间）；最新版无归因
+        assert p3[0]["reject_reasons"] == ["配图：图上有乱码"]
+        assert p3[1]["reject_reasons"] == []
 
 
 @pytest.mark.asyncio
