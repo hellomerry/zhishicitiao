@@ -125,7 +125,18 @@ async def action(payload: ActionIn):
         detail += f"；定点标记 {len(payload.marks)} 项（{items}）"
     await log_action(payload.reviewer_id, f"review_{payload.action_type}",
                      detail, task_id=tid)
-    return {"ok": True, "action": payload.action_type}
+    auto = None
+    if payload.action_type == "reject" and task is not None:
+        # 驳回即自动提交修正（2026-08-27 用户要求）：定点标记走 partial_regen，
+        # 无标记清理产物整体重生成，不再人工回任务中心点重试
+        from src.services.regen import enqueue_regen
+        auto = await enqueue_regen(tid)
+        await log_action(payload.reviewer_id, "auto_retry",
+                         "驳回自动提交重生成（"
+                         + (f"定点 {auto['mark_count']} 项标记，其余内容保留"
+                            if auto["mark_count"] else "整体重生成") + "）",
+                         task_id=tid)
+    return {"ok": True, "action": payload.action_type, "auto_retry": auto}
 
 
 @router.get("/api/review/queue/{role}")
@@ -217,12 +228,27 @@ async def task_detail(task_id: str):
             select(OcrResult).where(OcrResult.asset_id.in_([a.id for a in assets])))).scalars().all()
         risk = (await session.execute(
             select(RiskClassification).where(RiskClassification.task_id == tid))).scalars().first()
+        # 版本序号（含历史版本一起排序）：审核页区分初版/修正版
+        from src.api.tasks import _version_of
+        _all_ai = (await session.execute(
+            select(Asset).where(Asset.task_id == tid,
+                                Asset.source_type == "ai_generated"))).scalars().all()
+        _vmap: dict = {}
+        _bp: dict = {}
+        for a in _all_ai:
+            _bp.setdefault(a.page_index, []).append(a)
+        for _rows in _bp.values():
+            _rows.sort(key=lambda x: (x.created_at or datetime.min
+                                      .replace(tzinfo=timezone.utc), str(x.id)))
+            for _i, _a in enumerate(_rows, start=1):
+                _vmap[_a.id] = _i
         return {
             "task": {"query": task.query, "content_type": task.content_type, "status": task.status},
             "draft": {"body": draft.body, "model_version": draft.model_version} if draft else None,
             "claims": [{"claim_text": c.claim_text, "risk_level": c.risk_level} for c in claims],
             "evidences": [{"source_url": e.source_url, "excerpt": e.excerpt} for e in evidences],
             "assets": [{"page_index": a.page_index, "source_type": a.source_type,
+                        "version_no": _version_of(a, _vmap),
                         "image_url": a.image_url, "copyright_status": a.copyright_status,
                         "display_url": f"/api/assets/{a.id}/image"} for a in assets],
             "ocr": [{"asset_id": str(o.asset_id), "raw_text": o.raw_text} for o in ocrs],

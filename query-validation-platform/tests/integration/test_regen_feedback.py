@@ -285,8 +285,9 @@ async def test_partial_regen_only_touches_marked_items():
 
 
 @pytest.mark.asyncio
-async def test_retry_with_marks_enqueues_partial_without_clearing():
-    """带标记的驳回任务重试：走 partial_regen 工种，不清理已有产物。"""
+async def test_reject_with_marks_auto_enqueues_partial_without_clearing():
+    """带标记的驳回：审核动作自动提交 partial_regen（2026-08-27 起无需人工重试），
+    不清理已有产物、标记保持 open 等待闭环。"""
     from src.models.review import RejectMark
 
     task = await _make_task(status="review")
@@ -295,17 +296,16 @@ async def test_retry_with_marks_enqueues_partial_without_clearing():
                           model_version="m", prompt_version="p"))
         session.add(ReviewSession(task_id=task.id, role="A"))
         await session.commit()
-    await _reject_with_marks(task.id, [
-        {"item_type": "image", "page_index": 5, "reason": "风格不统一"}])
-
-    with patch("src.api.tasks.scheduler.enqueue", new=AsyncMock()) as mock_enqueue:
-        async with _client() as ac:
-            resp = await ac.post(f"/api/tasks/{task.id}/retry?actor=tester")
-    assert resp.status_code == 200
-    assert resp.json()["kind"] == "partial_regen"
+    with patch("src.stream.scheduler.scheduler.enqueue", new=AsyncMock()) as mock_enqueue:
+        await _reject_with_marks(task.id, [
+            {"item_type": "image", "page_index": 5, "reason": "风格不统一"}])
     _, kwargs = mock_enqueue.call_args
     assert kwargs.get("kind") == "partial_regen"
     async with SessionLocal() as session:
+        # 已自动提交重生成：状态回到待生产
+        t = (await session.execute(
+            select(Task).where(Task.id == task.id))).scalar_one()
+        assert t.status == "draft"
         # 产物未清理；标记仍 open（等 partial_regen 处理后闭环）
         assert (await session.execute(
             select(func.count()).select_from(Draft).where(
@@ -403,6 +403,14 @@ async def test_activate_switches_active_version_and_rebuilds_checks():
             select(func.count()).select_from(RiskClassification).where(
                 RiskClassification.task_id == task.id))).scalar()
         assert rc == 1
+    # 详情返回版本序号：P3 同页两版按生成先后编号，初版（换回后）为正式
+    async with _client() as ac:
+        r = await ac.get(f"/api/tasks/{task.id}/detail", params={"actor": admin})
+        p3 = sorted([a for a in r.json()["assets"]
+                     if a["source_type"] == "ai_generated" and a["page_index"] == 3],
+                    key=lambda x: x["version_no"])
+        assert [a["version_no"] for a in p3] == [1, 2]
+        assert p3[0]["is_active"] is True and p3[1]["is_active"] is False
 
 
 @pytest.mark.asyncio

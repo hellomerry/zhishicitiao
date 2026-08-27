@@ -161,6 +161,11 @@ async def list_tasks(status: str | None = None, mode: str | None = None,
         return {"total": total, "items": items}
 
 
+def _version_of(asset, version_map):
+    """AI 生成图的版本序号（同页内按生成时间 1..N；参考图无版本概念为 None）。"""
+    return version_map.get(asset.id)
+
+
 @router.get("/api/tasks/{task_id}/detail")
 async def task_detail(task_id: str, actor: str = ""):
     """任务详情：全字段 + 节点进度 + 正文/分页/图片/事实点/证据/风险 + 三方审核状态。
@@ -245,6 +250,17 @@ async def task_detail(task_id: str, actor: str = ""):
             select(RejectMark).where(RejectMark.task_id == tid,
                                      RejectMark.status == "open")
             .order_by(RejectMark.page_index))).scalars().all()
+        # 每张 AI 生成图的版本序号（同页内按生成时间排序）：前端区分初版/修正版
+        _version_map: dict = {}
+        _by_page: dict = {}
+        for a in assets:
+            if a.source_type == "ai_generated":
+                _by_page.setdefault(a.page_index, []).append(a)
+        for _rows in _by_page.values():
+            _rows.sort(key=lambda x: (x.created_at or datetime.min
+                                      .replace(tzinfo=timezone.utc), str(x.id)))
+            for _i, _a in enumerate(_rows, start=1):
+                _version_map[_a.id] = _i
         return {
             "task": {
                 "id": str(task.id),
@@ -268,6 +284,7 @@ async def task_detail(task_id: str, actor: str = ""):
             "assets": [{"id": str(a.id), "page_index": a.page_index,
                         "subject": a.subject, "source_type": a.source_type,
                         "is_active": a.is_active,
+                        "version_no": _version_of(a, _version_map),
                         "image_url": a.image_url,
                         "display_url": f"/api/assets/{a.id}/image"} for a in assets],
             "claims": [{"claim_text": c.claim_text, "risk_level": c.risk_level,

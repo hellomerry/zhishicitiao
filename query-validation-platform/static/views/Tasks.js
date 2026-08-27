@@ -126,12 +126,12 @@ const TasksView = {
     zoomItems() {
       const gen = this.genAssets.map(a => ({
         src: a.display_url || a.image_url,
-        title: `P${a.page_index} · AI 生成`,
+        title: `P${a.page_index} · ${a.version_no > 1 ? `修正版 第${a.version_no}版` : '初版'}`,
         text: this.pageCopyOf(a.page_index),
       }));
       const hist = this.historyAssets.map(a => ({
         src: a.display_url || a.image_url,
-        title: `P${a.page_index} · 历史版本`,
+        title: `P${a.page_index} · 历史 第${a.version_no}版`,
         text: this.pageCopyOf(a.page_index),
       }));
       const ref = this.refAssets.map(a => ({
@@ -399,7 +399,7 @@ const TasksView = {
             <div class="img-grid">
               <figure v-for="a in genAssets" :key="a.id">
                 <img :src="a.display_url || a.image_url" loading="lazy" alt="" @click="openZoom(a, false)">
-                <figcaption class="muted">P{{ a.page_index }} · AI 生成</figcaption>
+                <figcaption class="muted">P{{ a.page_index }} · <span v-if="a.version_no > 1" class="tag tag-blue">修正版 第{{ a.version_no }}版</span><span v-else>初版</span></figcaption>
               </figure>
             </div>
           </template>
@@ -409,7 +409,7 @@ const TasksView = {
             <div class="img-grid">
               <figure v-for="a in historyAssets" :key="a.id">
                 <img :src="a.display_url || a.image_url" loading="lazy" alt="" @click="openZoom(a, false)">
-                <figcaption class="muted">P{{ a.page_index }} · 历史版本
+                <figcaption class="muted">P{{ a.page_index }} · 历史 第{{ a.version_no }}版
                   <a href="javascript:;" style="color:#06c;margin-left:6px" title="把此版本设为正式版" @click="activateAsset(a)">设为正式</a></figcaption>
               </figure>
             </div>

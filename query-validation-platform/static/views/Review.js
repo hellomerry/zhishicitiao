@@ -136,7 +136,7 @@ const ReviewView = {
             : [],
         });
         this.msg = actionType === 'approve' ? '已通过'
-          : (this.marksList.length ? `已驳回（定点标记 ${this.marksList.length} 项，重试时仅重生成这些项）` : '已驳回');
+          : (this.marksList.length ? `已驳回并自动提交修正（定点重生成 ${this.marksList.length} 项，其余内容保留）` : '已驳回并自动提交修正（整体重生成）');
         this.showReject = false; this.rejectReason = ''; this.marks = {};
         this.releaseTimers();
         const id = this.currentId;
@@ -236,7 +236,7 @@ const ReviewView = {
               <div class="img-grid">
                 <figure v-for="a in genAssets" :key="a.page_index">
                   <img :src="a.display_url || a.image_url" loading="lazy" alt="" @click="openZoom(a, false)">
-                  <figcaption class="muted">P{{ a.page_index }}
+                  <figcaption class="muted">P{{ a.page_index }} · <span v-if="a.version_no > 1" class="tag tag-blue">修正版 第{{ a.version_no }}版</span><span v-else>初版</span>
                     <button class="btn btn-sm" :class="isMarked('image', a.page_index) ? 'btn-danger' : 'btn-outline'"
                             style="margin-left:6px" @click.stop="toggleMark('image', a.page_index); showReject = true">
                       {{ isMarked('image', a.page_index) ? '✓ 已标记' : '⚑ 标问题' }}

@@ -93,9 +93,11 @@ async def test_reject_marks_rejected_and_writes_approval():
             "task_id": tid, "role": "B", "reviewer_id": f"tester-{_uniq()}",
             "action_type": "reject", "reason": "事实错误"})
     assert r.json()["ok"] is True
+    # 驳回即自动提交重生成（2026-08-27）：无标记 → 清理产物整体重跑，状态直接回待生产
+    assert r.json()["auto_retry"]["kind"] == "pipeline"
     async with SessionLocal() as s:
         t = (await s.execute(select(Task).where(Task.id == task.id))).scalar_one()
-        assert t.status == "rejected"
+        assert t.status == "draft"
         approvals = (await s.execute(
             select(Approval).where(Approval.task_id == task.id))).scalars().all()
         assert len(approvals) == 1

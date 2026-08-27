@@ -73,6 +73,31 @@ async def get_open_marks(session, task_id):
         .order_by(RejectMark.created_at))).scalars().all()
 
 
+async def enqueue_regen(task_id) -> dict:
+    """驳回任务再生产入队（2026-08-27 起审核驳回后自动调用，不再人工点重试）。
+
+    有 open 定点标记 → partial_regen（只重做标记项，其余已认可内容保留）；
+    无标记 → 清理上一轮全部内容产物后全链重跑（驳回理由注入重新生产）。
+    返回 {"kind", "mark_count"}。
+    """
+    from src.db.session import SessionLocal
+    from src.models.tasks import Task
+    from src.stream.scheduler import scheduler
+    async with SessionLocal() as session:
+        task = (await session.execute(
+            select(Task).where(Task.id == task_id))).scalar_one()
+        mark_count = len(await get_open_marks(session, task_id))
+        if not mark_count:
+            await clear_generated_content(session, task_id)
+        task.status = "draft"
+        query = task.query
+        priority = task.priority or "normal"
+        await session.commit()
+    kind = "partial_regen" if mark_count else "pipeline"
+    await scheduler.enqueue(task_id, query, priority=priority, kind=kind)
+    return {"kind": kind, "mark_count": mark_count}
+
+
 def _fill_template(template: str, mapping: dict) -> str:
     """替换 {placeholder}；模板里缺的占位符以【标签】段落追加，保证信息不丢。"""
     labels = {"body": "正文", "old_copy": "原页文案", "feedback": "审核意见",
