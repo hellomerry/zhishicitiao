@@ -43,6 +43,36 @@ IMAGE_PROMPTS = {
     "compare": "对比类配图。硬性要求：每页必须在同一画面中同时呈现两个主体做对比（左右分栏或上下对比构图，参考图顺序不能乱：主体A的参考图在前、主体B的在后），展示同一维度下两者的差异；不同页聚焦不同角度（整体外观、正面、侧面、局部细节、使用场景）。将两个主体的参考实景图融入画面：去水印、去人物、实景图不重复。" + _SHARED_IMAGE_STYLE + "【本页必须出现在图中的文字，逐字准确呈现】：{page_body}",
 }
 
+# ===== 无字版生图提示词（文字后期合成模式，2026-08-27）=====
+# AI 只画背景、文字由 text_composite 用真实字体合成：提示词必须严禁图中出现任何
+# 文字，并要求在指定区域预留干净留白。文字区位置与 text_composite._ZONE_BY_PAGE
+# 一一对应，改动时必须两边同步。自定义模板（提示词库）都含文字要求、与此模式
+# 冲突，故本模式固定使用内置模板。
+_MODE_PREFIX_NOTEXT = {
+    "general": "通用科普/教程配图插画，纯 AI 生成、无参考图。",
+    "single": "单品评测配图插画，将提供的参考实景图融入画面：去水印、去人物、去掉参考图上的一切文字、实景图不重复、每页实景图不宜过多以免杂乱；不额外添加其他图片。",
+    "compare": "对比类配图插画。硬性要求：每页必须在同一画面中同时呈现两个主体做对比（左右分栏或上下对比构图，参考图顺序不能乱：主体A的参考图在前、主体B的在后），展示同一维度下两者的差异；不同页聚焦不同角度（整体外观、正面、侧面、局部细节、使用场景）。将两个主体的参考实景图融入画面：去水印、去人物、去掉参考图上的一切文字、实景图不重复。",
+}
+
+_SHARED_IMAGE_STYLE_NOTEXT = (
+    "竖版3:4图文卡片插画。图片与主题强相关、具有信息增益：对内容的提炼和可视化表达。"
+    "主体清晰不被遮挡、展现完整主体不裁剪关键特征。"
+    "坚韧治愈风、高清、极简高级，背景不太白也不太暗；全套图片风格保持一致。"
+    "【绝对禁止】画面中不要出现任何文字：汉字、字母、数字、标点、招牌字、标签字、"
+    "屏幕字一律不要（文字将由后期程序精确合成）；不出现人脸、书籍等元素。"
+    "图片元素不与前页重复。"
+)
+
+# 无字版分页排版轮换：指定本页预留文字区的位置（与 _ZONE_BY_PAGE 对应）
+_PAGE_LAYOUTS_NOTEXT = [
+    "本页是封面页：主视觉大图占画面上部约三分之二，底部约三分之一保持干净、简洁、低细节，用于后期叠加文字。",
+    "本页是要点页：上部约五分之二保持干净、简洁、低细节，用于后期叠加文字，下部为插画主体。",
+    "本页是特写页：主体特写充满画面，底部约四分之一保持干净的横条区域，用于后期叠加文字。",
+    "本页是清单页：上部约三分之一保持干净、简洁、低细节，用于后期叠加文字，下部信息图形化排列。",
+    "本页是场景页：全幅场景插画，顶部约三分之一保持干净、简洁、低细节，用于后期叠加文字。",
+    "本页是总结页：画面中部约五分之二保持干净、简洁、低细节，用于后期叠加文字，四周环绕装饰元素。",
+]
+
 # 旧版提示词（保留兼容：get_prompt 仍可读 draft_v1 / page_split_v1 / evidence_v1）
 PROMPT_VERSIONS = {
     "draft_v1": DRAFT_PROMPTS["general"],
@@ -64,7 +94,15 @@ def get_draft_prompt(mode: str) -> str:
 
 
 def get_image_prompt(mode: str, page_body: str, page_index: int = None,
-                     template: str = None) -> str:
+                     template: str = None, no_text: bool = False) -> str:
+    if no_text:
+        # 文字后期合成模式：AI 只画无字背景并预留文字区（固定内置模板，
+        # 自定义模板都含文字要求、与此模式冲突）
+        prompt = (_MODE_PREFIX_NOTEXT.get(mode, _MODE_PREFIX_NOTEXT["general"])
+                  + _SHARED_IMAGE_STYLE_NOTEXT)
+        if page_index:
+            prompt += _PAGE_LAYOUTS_NOTEXT[(page_index - 1) % len(_PAGE_LAYOUTS_NOTEXT)]
+        return prompt
     # template：用户自定义生图提示词（替代系统模板），排版轮换仍由代码追加
     template = template or IMAGE_PROMPTS.get(mode, IMAGE_PROMPTS["general"])
     prompt = template.replace("{page_body}", page_body)

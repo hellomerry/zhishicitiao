@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     # 生图质量档（2026-08-27 对齐官方建议：中文信息图文字渲染用 high）；
     # 网关不支持该参数时自动降级去掉重试（见 image_gen._post_with_quality_fallback）
     image_quality: str = "high"
+    # 文字后期合成（2026-08-27 终极方案）：AI 只画无字背景，分页文案用真实字体
+    # （static/fonts/NotoSansSC-*.otf）程序化合成，从根上消除异体变形/伪汉字
+    text_composite_enabled: bool = True
     mock_image_gen: bool = False         # 开发阶段模拟生图（不调 API、不花钱）
     # 搜实景图 provider（openserp 免费默认 / doubao_ark / bing_api 预留）
     image_search_provider: str = "openserp"

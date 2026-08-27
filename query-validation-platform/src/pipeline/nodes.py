@@ -452,10 +452,13 @@ async def _generate_single_asset(task_id, page_index: int, prompt: str,
 
 
 async def _dedupe_and_validate(asset: dict, prompt: str, reference_urls,
-                               task_id, page_index: int, seen_hashes: set) -> tuple:
+                               task_id, page_index: int, seen_hashes: set,
+                               page_body: str = "") -> tuple:
     """内容级去重 + 尺寸校验：下载图片字节算内容 hash，与本任务已出图重复则换构图重生成一次；
     宽高比偏离 3:4 则在 model_version 上标记（交付导出时会统一归一到 1152x1536）。
-    返回 (asset, 额外生成次数, 图片字节)。"""
+    text_composite_enabled 且给了 page_body 时，AI 图只是无字背景：在本地化前把
+    分页文案用真实字体合成上去（终极方案，从根上消除异体变形/伪汉字）。
+    返回 (asset, 额外生成次数)。"""
     import io
     from src.gateway.ocr import fetch_image_bytes
     extra = 0
@@ -474,6 +477,14 @@ async def _dedupe_and_validate(asset: dict, prompt: str, reference_urls,
             content_hash = hashlib.md5(data).hexdigest()
         seen_hashes.add(content_hash)
         asset["hash"] = content_hash
+        # 文字后期合成：把分页文案用真实字体合成到无字背景上（合成图固定 1152x1536）
+        if settings.text_composite_enabled and (page_body or "").strip():
+            from src.services.text_composite import composite_page
+            composited = composite_page(data, page_body, page_index)
+            if composited:
+                data, ctype = composited, "image/png"
+                asset["hash"] = hashlib.md5(data).hexdigest()
+                asset["model_version"] += "|textcmp"
         from PIL import Image
         w, h = Image.open(io.BytesIO(data)).size
         if abs(w / h - 0.75) > 0.05:
@@ -517,13 +528,17 @@ async def _text_quality_gate(asset: dict, prompt: str, reference_urls,
         attempts += 1
         print(f"[asset_gen] 任务{task_id} 第{page_index}页文字相似度 {sim:.2f} "
               f"低于阈值 {settings.ocr_text_similarity_threshold}，第 {attempts} 次重生成")
+        # 合成模式下 AI 图无字，OCR 对撞的是合成文字；不达标说明背景干扰文字区，
+        # 重生成时要求更干净的留白；非合成模式则是 AI 文字本身扭曲
+        retry_hint = ("（上一版背景干扰了文字区域：请保持预留区域干净、简洁、低细节，"
+                      "画面中不要出现任何文字）" if settings.text_composite_enabled
+                      else "（上一版图中文字扭曲/乱码：请进一步减少图中文字，"
+                           "只保留大标题和最关键的一行字，确保每个汉字笔画正确）")
         regen = await _generate_single_asset(
-            task_id, page_index,
-            prompt + "（上一版图中文字扭曲/乱码：请进一步减少图中文字，"
-                     "只保留大标题和最关键的一行字，确保每个汉字笔画正确）",
-            reference_urls)
+            task_id, page_index, prompt + retry_hint, reference_urls)
         asset, dedupe_extra = await _dedupe_and_validate(
-            regen, prompt, reference_urls, task_id, page_index, seen_hashes)
+            regen, prompt, reference_urls, task_id, page_index, seen_hashes,
+            page_body=expected_text)
         attempts += dedupe_extra
 
 
@@ -578,11 +593,13 @@ async def node_asset_gen(input_data: dict) -> dict:
         return picks or reference_urls
     # 自定义生图模板（提示词库启用的）替代系统模板；排版轮换仍由代码追加
     image_template = await get_effective_prompt("image_gen", mode, owner_id)
-    prompts = [get_image_prompt(mode, p.body or "", i, template=image_template)
+    no_text = settings.text_composite_enabled
+    prompts = [get_image_prompt(mode, p.body or "", i, template=image_template,
+                                no_text=no_text)
                for i, p in enumerate(page_list, start=1)]
     while len(prompts) < 6:
         prompts.append(get_image_prompt(mode, "", len(prompts) + 1,
-                                        template=image_template))
+                                        template=image_template, no_text=no_text))
     # 串行 + 间隔生成：避免测试账户限流，保证每张图有足够处理时间
     results = []
     seen_hashes = set()
@@ -593,11 +610,12 @@ async def node_asset_gen(input_data: dict) -> dict:
         r = await _generate_single_asset(
             input_data["task_id"], i, prompts[i - 1], refs_i)
         if not settings.mock_image_gen:
-            r, extra = await _dedupe_and_validate(r, prompts[i - 1], refs_i,
-                                                  input_data["task_id"], i, seen_hashes)
+            page_body = page_list[i - 1].body if i - 1 < len(page_list) else ""
+            r, extra = await _dedupe_and_validate(
+                r, prompts[i - 1], refs_i, input_data["task_id"], i, seen_hashes,
+                page_body=page_body or "")
             extra_gen += extra
             # 文字质检：OCR 对撞分页文案，扭曲图自动重生成（文字扭曲是最高频客诉）
-            page_body = page_list[i - 1].body if i - 1 < len(page_list) else ""
             r, text_extra, gate_cost = await _text_quality_gate(
                 r, prompts[i - 1], refs_i, input_data["task_id"], i,
                 page_body or "", seen_hashes)

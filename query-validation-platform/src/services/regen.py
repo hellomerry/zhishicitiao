@@ -217,7 +217,8 @@ async def partial_regen(task_id) -> dict:
         done_pages = []
         for p in images_to_regen:
             prompt = get_image_prompt(mode, body_map.get(p, ""), p,
-                                      template=image_template)
+                                      template=image_template,
+                                      no_text=settings.text_composite_enabled)
             fb = image_reasons.get(p, []) + page_reasons.get(p, [])
             if fb:
                 prompt += ("\n\n【审核意见】该页上一版本被人工审核驳回："
@@ -225,7 +226,8 @@ async def partial_regen(task_id) -> dict:
             r = await _generate_single_asset(task_id, p, prompt, reference_urls)
             if not settings.mock_image_gen:
                 r, extra = await _dedupe_and_validate(
-                    r, prompt, reference_urls, task_id, p, seen_hashes)
+                    r, prompt, reference_urls, task_id, p, seen_hashes,
+                    page_body=body_map.get(p, ""))
                 extra_gen += extra
             async with SessionLocal() as session:
                 # 旧版本不删除，降级为历史版本（is_active=false）保留，
