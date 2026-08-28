@@ -19,8 +19,15 @@ async def fetch_image_bytes(image_url: str) -> tuple:
     生图代理（openox）部分上游返回的是"签名内联 URL"——图片数据直接编码在
     URL 路径里（/v1/images/content/<base64url>.<sig>），这种 URL 超过 4MB，
     任何 HTTP 客户端都无法请求（414），需要本地解码出内嵌的图片数据。
-    本地产出（/static/generated/...）直接读磁盘。
+    本地产出（/static/generated/...）直接读磁盘。Gemini 适配层返回 data URI，
+    同样本地解码（2026-08-28）。
     """
+    if image_url.startswith("data:image/"):
+        # data URI（Gemini 适配层内联返回）：头部含 mime，逗号后为 base64
+        import base64
+        header, b64 = image_url.split(",", 1)
+        ctype = header[5:].split(";")[0] or "image/png"
+        return base64.b64decode(b64), ctype
     if image_url.startswith("/static/"):
         from pathlib import Path
         ctype = {".png": "image/png", ".jpg": "image/jpeg",

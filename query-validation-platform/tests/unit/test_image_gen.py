@@ -102,3 +102,111 @@ async def test_quality_param_fallback_on_400(monkeypatch):
     assert r["image_url"] == "https://img/x.png"
     assert len(seen) == 2
     assert seen[0]["quality"] == "high" and "quality" not in seen[1]
+
+
+# ---------- Gemini provider（2026-08-28 fusionaix generateContent 协议）----------
+
+
+def _gemini_client_cls(seen, payload):
+    class FakeClient:
+        def __init__(self, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, **kwargs):
+            seen.append({"url": url, "json": kwargs.get("json"),
+                         "headers": kwargs.get("headers")})
+            return _FakeResp(200, payload)
+
+    return FakeClient
+
+
+_GEMINI_OK = {
+    "candidates": [{"content": {"parts": [
+        {"text": "说明文字"},
+        {"inlineData": {"mimeType": "image/png",
+                        "data": "aGVsbG8taW1n"}},  # b"hello-img"
+    ]}}],
+}
+
+
+@pytest.mark.asyncio
+async def test_gemini_generate_request_and_response(monkeypatch):
+    """gemini provider：参考图内联 inlineData + 提示词同请求；响应取含
+    inlineData 的 part，返回 data URI + 内容 md5。"""
+    import base64
+    monkeypatch.setattr(image_gen.settings, "gemini_image_base_url",
+                        "https://fusion.example")
+    monkeypatch.setattr(image_gen.settings, "openai_image_api_key", "sk-fusion-x")
+    monkeypatch.setattr(image_gen.settings, "gemini_api_key", "")
+    monkeypatch.setattr(image_gen.settings, "gemini_image_model",
+                        "gemini-3-pro-image")
+    monkeypatch.setattr(image_gen.settings, "gemini_image_size", "2K")
+    seen = []
+    monkeypatch.setattr(image_gen.httpx, "AsyncClient",
+                        _gemini_client_cls(seen, _GEMINI_OK))
+    monkeypatch.setattr(image_gen, "_download_image_bytes",
+                        AsyncMock(return_value=(b"refbytes", "image/jpeg")))
+    r = await image_gen._gemini_generate(
+        "画一杯冰牛奶", ["https://x/ref1.jpg"], "1152x1536")
+    req = seen[0]
+    assert req["url"] == ("https://fusion.example/v1beta/models/"
+                          "gemini-3-pro-image:generateContent")
+    assert req["headers"]["Authorization"] == "Bearer sk-fusion-x"
+    parts = req["json"]["contents"][0]["parts"]
+    assert parts[0]["inlineData"]["mimeType"] == "image/jpeg"
+    assert base64.b64decode(parts[0]["inlineData"]["data"]) == b"refbytes"
+    assert parts[1] == {"text": "画一杯冰牛奶"}
+    cfg = req["json"]["generationConfig"]
+    assert cfg["imageConfig"] == {"aspectRatio": "3:4", "imageSize": "2K"}
+    assert r["image_url"] == "data:image/png;base64,aGVsbG8taW1n"
+    import hashlib
+    assert r["hash"] == hashlib.md5(b"hello-img").hexdigest()
+    assert r["model_version"] == "gemini-3-pro-image"
+
+
+@pytest.mark.asyncio
+async def test_gemini_provider_routing(monkeypatch):
+    """image_provider=gemini 时 generate_image 走 _gemini_generate（有无参考图都一样，
+    Gemini 原生多模态无独立 edits 端点）。"""
+    monkeypatch.setattr(image_gen.settings, "image_provider", "gemini")
+    monkeypatch.setattr(image_gen.settings, "mock_image_gen", False)
+    with patch.object(image_gen, "_gemini_generate",
+                      new=AsyncMock(return_value={"image_url": "u", "hash": "h",
+                                                  "model_version": "gemini"})) as gem, \
+         patch.object(image_gen, "_generate", new=AsyncMock()) as gen, \
+         patch.object(image_gen, "_edit_with_references", new=AsyncMock()) as edit:
+        await _generate_image("p")
+        await _generate_image("p", reference_image_urls=["https://x/a.png"])
+    assert gem.await_count == 2
+    gen.assert_not_called()
+    edit.assert_not_called()
+    monkeypatch.setattr(image_gen.settings, "image_provider", "openai_images")
+
+
+def test_aspect_of():
+    assert image_gen._aspect_of("1152x1536") == "3:4"
+    assert image_gen._aspect_of("1024x1024") == "1:1"
+    assert image_gen._aspect_of("bad") == "3:4"
+
+
+def test_cost_per_image_by_provider(monkeypatch):
+    monkeypatch.setattr(image_gen.settings, "image_provider", "gemini")
+    monkeypatch.setattr(image_gen.settings, "gemini_image_cost_per_image_cny", 0.6)
+    monkeypatch.setattr(image_gen.settings, "image_cost_per_image_cny", 0.2)
+    assert image_gen.cost_per_image() == 0.6
+    monkeypatch.setattr(image_gen.settings, "image_provider", "openai_images")
+    assert image_gen.cost_per_image() == 0.2
+
+
+@pytest.mark.asyncio
+async def test_fetch_image_bytes_data_uri():
+    """fetch_image_bytes 支持 Gemini 适配层返回的 data URI（本地解码不进网络）。"""
+    from src.gateway.ocr import fetch_image_bytes
+    data, ctype = await fetch_image_bytes("data:image/png;base64,aGVsbG8taW1n")
+    assert data == b"hello-img" and ctype == "image/png"

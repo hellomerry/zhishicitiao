@@ -20,6 +20,16 @@ class Settings(BaseSettings):
     # 生图质量档（2026-08-27 对齐官方建议：中文信息图文字渲染用 high）；
     # 网关不支持该参数时自动降级去掉重试（见 image_gen._post_with_quality_fallback）
     image_quality: str = "high"
+    # 生图 provider（2026-08-28 fusionaix 统一网关实测接入）：openai_images=OpenAI
+    # Images 协议（gpt-image-2 等，走 openai_image_base_url）；gemini=Gemini
+    # generateContent 协议（gemini-3-pro-image，原生多模态，参考图内联进请求，
+    # 风格质感与 gpt-image-2 不同，用于视觉风格对比）
+    image_provider: str = "openai_images"
+    gemini_image_base_url: str = ""        # 如 https://api.fusionaix.cn（不含 /v1beta）
+    gemini_api_key: str = ""               # 空则回退 openai_image_api_key（同网关同 key）
+    gemini_image_model: str = "gemini-3-pro-image"
+    gemini_image_size: str = "2K"          # 1K/2K/4K 档（fusionaix 定价 0.5/0.6/0.9 元）
+    gemini_image_cost_per_image_cny: float = 0.6  # 2K 档单价（成本记账按 provider 取价）
     # 文字后期合成（2026-08-27 终极方案）：AI 只画无字背景，分页文案用真实字体
     # （static/fonts/NotoSansSC-*.otf）程序化合成，从根上消除异体变形/伪汉字
     text_composite_enabled: bool = True

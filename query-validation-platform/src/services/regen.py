@@ -264,8 +264,9 @@ async def partial_regen(task_id) -> dict:
                 await session.commit()
             done_pages.append(p)
             await asyncio.sleep(settings.image_gen_delay_seconds)
+        from src.gateway.image_gen import cost_per_image
         cost = ocr_cost if settings.mock_image_gen else (
-            (len(done_pages) + extra_gen) * settings.image_cost_per_image_cny
+            (len(done_pages) + extra_gen) * cost_per_image()
             + ocr_cost)
         return {"pages": done_pages, "extra_gen": extra_gen, "cost_cny": cost,
                 "prompt_version": f"asset_regen_r{rounds}"}

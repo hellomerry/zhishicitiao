@@ -39,15 +39,19 @@ def _mock_result(prompt: str) -> dict:
 async def generate_image(prompt: str, size: str = None,
                          reference_image_urls: list[str] | None = None,
                          max_retries: int = 3) -> dict:
-    """调用 gpt-image-2 生成一张图；reference_image_urls 非空则图生图。
+    """按 settings.image_provider 生成一张图；reference_image_urls 非空则图生图。
 
     mock_image_gen 开启时返回占位图；否则瞬时错误（SSL/502/400）做退避重试。
+    provider=gemini 时走 Gemini generateContent 协议（原生多模态，参考图与提示词
+    同请求内联，无独立 edits 端点）。
     """
     if settings.mock_image_gen:
         return _mock_result(prompt)
     size = size or IMAGE_SIZE
     for attempt in range(max_retries):
         try:
+            if settings.image_provider == "gemini":
+                return await _gemini_generate(prompt, reference_image_urls, size)
             if reference_image_urls:
                 try:
                     return await _edit_with_references(prompt, reference_image_urls, size)
@@ -62,6 +66,72 @@ async def generate_image(prompt: str, size: str = None,
             if attempt == max_retries - 1:
                 raise
             await asyncio.sleep(2 * (2 ** attempt))
+
+
+def cost_per_image() -> float:
+    """当前 provider 的单张生图成本（元）。Gemini 与 gpt-image-2 单价不同，
+    成本记账统一走这里，不要在调用方直接读 settings.image_cost_per_image_cny。"""
+    if settings.image_provider == "gemini":
+        return settings.gemini_image_cost_per_image_cny
+    return settings.image_cost_per_image_cny
+
+
+def _aspect_of(size: str) -> str:
+    """1152x1536 → 3:4（Gemini imageConfig.aspectRatio 用宽高比，不用像素尺寸）。"""
+    from fractions import Fraction
+    try:
+        w, h = (int(x) for x in size.lower().split("x"))
+        f = Fraction(w, h)
+        return f"{f.numerator}:{f.denominator}"
+    except Exception:
+        return "3:4"
+
+
+async def _gemini_generate(prompt: str, reference_image_urls: list[str] | None,
+                           size: str) -> dict:
+    """Gemini generateContent 生图（2026-08-28 fusionaix 实测接入）：
+    POST {base}/v1beta/models/{model}:generateContent，参考图以 inlineData 内联
+    进 contents（原生多模态，无独立 edits 端点）；响应取 candidates[0] 里含
+    inlineData 的 part，图片字节以 data URI 返回（fetch_image_bytes 支持解码，
+    下游 _dedupe_and_validate 随即本地化落盘，data URI 只在内存中转）。"""
+    import base64
+    base = (settings.gemini_image_base_url
+            or settings.openai_image_base_url.removesuffix("/v1")).rstrip("/")
+    key = settings.gemini_api_key or settings.openai_image_api_key
+    model = settings.gemini_image_model
+    parts = []
+    for ref_url in (reference_image_urls or []):
+        content, ctype = await _download_image_bytes(ref_url)
+        parts.append({"inlineData": {"mimeType": ctype,
+                                     "data": base64.b64encode(content).decode()}})
+    parts.append({"text": prompt})
+    payload = {
+        "contents": [{"role": "user", "parts": parts}],
+        "generationConfig": {
+            "responseModalities": ["IMAGE"],
+            "imageConfig": {"aspectRatio": _aspect_of(size),
+                            "imageSize": settings.gemini_image_size},
+        },
+    }
+    url = f"{base}/v1beta/models/{model}:generateContent"
+    # 图片生成可能数分钟（网关文档建议 10 分钟超时）
+    async with httpx.AsyncClient(timeout=600) as client:
+        resp = await client.post(url, json=payload,
+                                 headers={"Authorization": f"Bearer {key}"})
+        if resp.status_code >= 400:
+            raise RuntimeError(
+                f"gemini image gen failed ({resp.status_code}): {resp.text[:400]}")
+        data = resp.json()
+    for cand in data.get("candidates", []):
+        for part in (cand.get("content") or {}).get("parts", []):
+            inline = part.get("inlineData") or part.get("inline_data")
+            if inline and inline.get("data"):
+                raw = base64.b64decode(inline["data"])
+                mime = inline.get("mimeType") or inline.get("mime_type") or "image/png"
+                return {"image_url": f"data:{mime};base64,{inline['data']}",
+                        "hash": hashlib.md5(raw).hexdigest(),
+                        "model_version": model}
+    raise RuntimeError(f"gemini response missing inlineData: {str(data)[:300]}")
 
 
 async def _post_with_quality_fallback(client: httpx.AsyncClient, url: str,

@@ -670,10 +670,11 @@ async def node_asset_gen(input_data: dict) -> dict:
         for r in results:
             session.add(Asset(**r))
         await session.commit()
+    from src.gateway.image_gen import cost_per_image
     return {"asset_count": len(results),
             "image_urls": [r.get("image_url") for r in results if r.get("image_url")],
             "cost_cny": 0 if settings.mock_image_gen
-                        else (len(results) + extra_gen) * settings.image_cost_per_image_cny
+                        else (len(results) + extra_gen) * cost_per_image()
                              + ocr_gate_cost}
 
 
