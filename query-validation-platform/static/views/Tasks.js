@@ -222,6 +222,18 @@ const TasksView = {
         await this.open(this.detailTask);
       } catch (e) { alert('删除失败：' + e.message); }
     },
+    // 实图角标（2026-08-28 用户要求实图带标识）：搜索标的配色 + 来源标签
+    refSubjectClass(a) {
+      const s = a.subject || '';
+      if (s.startsWith('A:')) return 'tag-blue';
+      if (s.startsWith('B:')) return 'tag-green';
+      return 'tag-gray';
+    },
+    refSource(a) {
+      if (a.engine === 'upload') return '上传';
+      if ((a.subject || '').includes('补搜')) return '补搜';
+      return '搜索';
+    },
     async researchRefs() {
       const t = this.detailTask || {};
       const def = (t.query || '') + ' 高清';
@@ -584,7 +596,11 @@ const TasksView = {
           <div class="img-grid" v-if="refAssets.length">
             <figure v-for="a in refAssets" :key="a.id">
               <img :src="a.display_url || a.image_url" loading="lazy" alt="" @click="openZoom(a, true)">
-              <figcaption class="muted">参考 {{ a.page_index }} · {{ a.subject || '实景抓取' }}
+              <div class="ref-badges">
+                <span class="tag" :class="refSubjectClass(a)" :title="a.search_query ? '搜索词：' + a.search_query : ''">{{ a.subject || '公共池' }}</span>
+                <span class="tag tag-gray">{{ refSource(a) }}</span>
+              </div>
+              <figcaption class="muted">参考 {{ a.page_index }} · {{ a.subject || '实景抓取' }}<template v-if="a.search_query"><br>词：{{ a.search_query }}</template>
                 <a href="javascript:;" style="color:#c00;margin-left:6px" title="删除此参考图" @click="delRef(a)">删除</a></figcaption>
             </figure>
           </div>

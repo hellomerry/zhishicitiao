@@ -22,7 +22,10 @@ class ModelRefusalError(Exception):
 
 
 async def call_provider(model: str, prompt: str, api_key: str = None,
-                        api_base: str = None, max_tokens: int = 1024) -> dict:
+                        api_base: str = None, max_tokens: int = 4096) -> dict:
+    # max_tokens 默认 4096（2026-08-28 由 1024 上调）：deepseek-v4-pro / k3 都是
+    # 推理模型，reasoning 与正文共用 max_tokens 额度，1024 时长文任务推理就占满
+    # 额度→正文为空→误判 EmptyResponseError，双链降级失败（draft_gen RuntimeError）
     litellm.api_key = api_key or settings.deepseek_api_key
     start = time.time()
     kwargs = dict(model=model, messages=[{"role": "user", "content": prompt}],
@@ -33,7 +36,11 @@ async def call_provider(model: str, prompt: str, api_key: str = None,
     elapsed = time.time() - start
     text = response.choices[0].message.content if response.choices else None
     if text is None or text.strip() == "":
-        raise EmptyResponseError(f"model {model} returned empty response")
+        # 空响应带诊断信息：finish_reason=length 多为推理占满额度（需上调 max_tokens）
+        finish = response.choices[0].finish_reason if response.choices else "no-choices"
+        raise EmptyResponseError(
+            f"model {model} returned empty response (finish_reason={finish}, "
+            f"max_tokens={max_tokens})")
     refusal_markers = ["我无法", "我不能", "抱歉，我无法", "I cannot", "I'm sorry"]
     if any(m in text for m in refusal_markers):
         raise ModelRefusalError(f"model {model} refused: {text[:80]}")

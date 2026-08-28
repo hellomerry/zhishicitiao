@@ -301,6 +301,11 @@ async def task_detail(task_id: str, actor: str = ""):
                         "version_no": _version_of(a, _version_map),
                         "reject_reasons": _reason_map.get(a.id, []),
                         "image_url": a.image_url,
+                        # 参考图来源引擎（search/upload/补搜标在 subject 后缀），
+                        # 前端实图角标用（2026-08-28 用户要求实图带标识）
+                        "engine": a.model_version,
+                        # 该实图是哪个关键字搜来的（迁移 013；手动上传为 None）
+                        "search_query": a.search_query,
                         "display_url": f"/api/assets/{a.id}/image"} for a in assets],
             "claims": [{"claim_text": c.claim_text, "risk_level": c.risk_level,
                         "verification_status": c.verification_status} for c in claims],
@@ -743,6 +748,7 @@ async def ref_search(task_id: str, payload: RefSearchIn):
                     ref["url"].encode()).hexdigest(),
                 image_url=ref["url"], origin_url=ref["origin"],
                 model_version=ref["engine"],
+                search_query=q,
                 is_illustration=False))
         await session.commit()
     await log_action(payload.actor, "ref_search",

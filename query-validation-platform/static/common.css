@@ -183,9 +183,12 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary); b
 .plain-list { padding-left: 18px; font-size: 14px; line-height: 1.9; }
 .plain-list a { color: var(--primary); word-break: break-all; }
 .img-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-.img-grid figure { margin: 0; }
+.img-grid figure { margin: 0; position: relative; }
 .img-grid img { width: 100%; border-radius: 8px; border: 1px solid var(--border); display: block; }
 .img-grid figcaption { font-size: 12px; margin-top: 4px; text-align: center; }
+/* 实图角标（2026-08-28）：左上=搜索标的（A 蓝 / B 绿 / 公共灰），右上=来源 */
+.ref-badges { position: absolute; top: 6px; left: 6px; right: 6px; display: flex; justify-content: space-between; gap: 4px; pointer-events: none; }
+.ref-badges .tag { font-size: 11px; padding: 1px 7px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,.25); max-width: 75%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .page-copy { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; background: var(--card); }
 .log-box { background: #1f2430; color: #c8cede; border-radius: 8px; padding: 14px; font-size: 12px; line-height: 1.7; max-height: 360px; overflow: auto; white-space: pre-wrap; word-break: break-all; margin-top: 12px; }
 code { background: #f0f1f4; padding: 2px 6px; border-radius: 4px; font-size: 12px; }

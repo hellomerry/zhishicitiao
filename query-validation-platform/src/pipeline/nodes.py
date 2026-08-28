@@ -348,6 +348,7 @@ async def node_entity_bind(input_data: dict) -> dict:
                             ref["url"].encode()).hexdigest(),
                         image_url=ref["url"], origin_url=ref["origin"],
                         model_version=ref["engine"],
+                        search_query=q,
                         is_illustration=False))
                 unit_kept += len(refs)
             # 补搜循环：本主体达标+保底后仍不足 6 张 → 变体词补搜（最多 2 轮，
@@ -375,6 +376,7 @@ async def node_entity_bind(input_data: dict) -> dict:
                             ref["url"].encode()).hexdigest(),
                         image_url=ref["url"], origin_url=ref["origin"],
                         model_version=ref["engine"],
+                        search_query=q,
                         is_illustration=False))
                 unit_kept += len(refs)
             rescoped_total += rescoped
