@@ -1,17 +1,19 @@
-"""生图视觉风格自适应选择（2026-08-28，迁移 011，移植同事 8003 思路）。
+"""生图视觉风格自适应选择（2026-08-28，迁移 011/012，移植同事 8003 思路）。
 
-asset_gen 生图前为任务选定一种视觉风格（6 张图共用）：
-- 用户风格库（style_keywords 启用条目，设置页/CSV 可训练）非空 → 在用户库中选；
-- 库空 → 回退内置 8 风格；
-- 选择方式：LLM 按 query+正文摘要选最贴合的一种；LLM 失败/结果不在库中
-  → 关键词命中评分兜底（命中最多者胜，并列/全零随机）。
+asset_gen 生图前为任务选定一种视觉风格（6 张图共用），优先级（迁移 012 用户隔离）：
+0. 任务创建者钉了个人默认风格（users.default_style）→ 直接使用，跳过 LLM；
+1. 创建者个人库（style_keywords 启用条目）非空 → 个人库中选；
+2. 公共库（owner_id IS NULL 启用条目）非空 → 公共库中选；
+3. 都空 → 回退内置 8 风格。
+选择方式：LLM 按 query+正文摘要选最贴合的一种；LLM 失败/结果不在库中
+→ 关键词命中评分兜底（命中最多者胜，并列/全零随机）。
 选中风格的描述词替换生图模板中的固定风格句（见 prompt_versions.get_image_prompt）。
 """
 import random
 import re
 import traceback
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from src.db.session import SessionLocal
 from src.models.styles import StyleKeyword
@@ -62,29 +64,50 @@ def _keyword_pick(candidates: list, text: str) -> tuple:
     return random.choice(top)
 
 
-async def _user_style_candidates() -> list:
-    """启用中的用户风格库条目 → [(风格名, 描述词, 关键词)]；空库返回 []。"""
+async def _style_candidates(owner_id, public: bool) -> list:
+    """指定作用域启用条目 → [(风格名, 描述词, 关键词)]；空库返回 []。
+    public=True 查公共库（owner_id IS NULL），否则查该用户的个人库。"""
+    scope = StyleKeyword.owner_id.is_(None) if public \
+        else StyleKeyword.owner_id == owner_id
     async with SessionLocal() as session:
         rows = list((await session.execute(
-            select(StyleKeyword).where(StyleKeyword.enabled)
+            select(StyleKeyword).where(StyleKeyword.enabled, scope)
             .order_by(StyleKeyword.created_at))).scalars().all())
     return [(r.style_name, r.description, r.keywords) for r in rows]
 
 
-async def pick_image_style(query: str, body: str, llm_call=None) -> tuple:
+async def _default_style(owner_id) -> str | None:
+    """创建者钉的个人默认风格名（users.default_style，迁移 012）；未钉返回 None。"""
+    if owner_id is None:
+        return None
+    async with SessionLocal() as session:
+        return (await session.execute(
+            text("SELECT default_style FROM users WHERE id = :u"),
+            {"u": owner_id})).scalar()
+
+
+async def pick_image_style(query: str, body: str, owner_id=None, llm_call=None) -> tuple:
     """选定生图视觉风格，返回 (风格名, 描述词)。
 
-    llm_call：文本模型调用入口（async，签名同 call_with_failover），由调用方
-    注入以便测试 mock；缺省走 failover 主备通道。LLM 失败/结果不在库中自动
-    退回关键词命中评分，任何情况下都返回库内合法风格。
+    owner_id：任务创建者（决定个人默认风格与个人库）；llm_call：文本模型调用
+    入口（async，签名同 call_with_failover），由调用方注入以便测试 mock；
+    缺省走 failover 主备通道。LLM 失败/结果不在库中自动退回关键词命中评分，
+    任何情况下都返回库内合法风格。
     """
+    # 优先级 0：个人默认风格直通（跳过 LLM）
+    default = await _default_style(owner_id)
+    if default:
+        return default, await style_desc_for(default, owner_id)
     if llm_call is None:
         from src.gateway.failover import call_with_failover, DEEPSEEK_MODEL, KIMI_MODEL
 
         async def llm_call(prompt):
             return await call_with_failover(prompt, DEEPSEEK_MODEL, KIMI_MODEL,
                                             max_retries=1)
-    candidates = await _user_style_candidates()
+    # 优先级 1/2/3：个人库 → 公共库 → 内置 8 风格
+    candidates = await _style_candidates(owner_id, public=False) if owner_id else []
+    if not candidates:
+        candidates = await _style_candidates(owner_id, public=True)
     if not candidates:
         candidates = list(IMAGE_STYLE_LIBRARY)
     names = {n for n, _, _ in candidates}
@@ -102,16 +125,24 @@ async def pick_image_style(query: str, body: str, llm_call=None) -> tuple:
     return _keyword_pick(candidates, (query or "") + "\n" + (body or "")[:500])
 
 
-async def style_desc_for(style_name: str) -> str | None:
-    """按风格名反查描述词：先查用户库（含停用条目，保持已选定风格稳定），再查
-    内置库；查不到/出错返回 None（提示词沿用模板默认风格句）。"""
+async def style_desc_for(style_name: str, owner_id=None) -> str | None:
+    """按风格名反查描述词：个人库（含停用条目，保持已选定风格稳定）→ 公共库
+    → 内置库；查不到/出错返回 None（提示词沿用模板默认风格句）。"""
     name = (style_name or "").strip()
     if not name:
         return None
     try:
         async with SessionLocal() as session:
+            if owner_id is not None:
+                row = (await session.execute(
+                    select(StyleKeyword).where(
+                        StyleKeyword.owner_id == owner_id,
+                        StyleKeyword.style_name == name))).scalars().first()
+                if row and row.description:
+                    return row.description
             row = (await session.execute(
                 select(StyleKeyword).where(
+                    StyleKeyword.owner_id.is_(None),
                     StyleKeyword.style_name == name))).scalars().first()
         if row and row.description:
             return row.description

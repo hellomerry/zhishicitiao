@@ -196,7 +196,7 @@ async def partial_regen(task_id) -> dict:
         from src.gateway.ocr import ocr_image
         from src.services.style_pick import style_desc_for
         image_template = await get_effective_prompt("image_gen", mode, owner_id)
-        style_desc = await style_desc_for(gen_style)
+        style_desc = await style_desc_for(gen_style, owner_id)
         async with SessionLocal() as session:
             # 保留图的 hash 作为去重基准：重生成图不得与已认可的图重复（只算正式版）
             kept = (await session.execute(

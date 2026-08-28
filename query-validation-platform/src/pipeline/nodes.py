@@ -653,7 +653,7 @@ async def node_asset_gen(input_data: dict) -> dict:
             async with SessionLocal() as session:
                 draft_body = await _latest_draft_body(session, input_data["task_id"])
             gen_style, style_desc = await pick_image_style(
-                query, draft_body,
+                query, draft_body, owner_id=owner_id,
                 llm_call=lambda p: call_with_failover(
                     p, DEEPSEEK_MODEL, KIMI_MODEL, max_retries=1))
             async with SessionLocal() as session:
@@ -666,7 +666,7 @@ async def node_asset_gen(input_data: dict) -> dict:
             gen_style = None
     if gen_style and style_desc is None:
         from src.services.style_pick import style_desc_for
-        style_desc = await style_desc_for(gen_style)
+        style_desc = await style_desc_for(gen_style, owner_id)
     # 自定义生图模板（提示词库启用的）替代系统模板；排版轮换仍由代码追加
     image_template = await get_effective_prompt("image_gen", mode, owner_id)
     no_text = settings.text_composite_enabled

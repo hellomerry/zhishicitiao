@@ -11,7 +11,10 @@ Base = declarative_base()
 class StyleKeyword(Base):
     __tablename__ = "style_keywords"
     id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    style_name = Column(Text, nullable=False, unique=True)
+    # 归属（迁移 012）：NULL=admin 公共库，非空=个人库；唯一性为「同一 owner 内
+    # style_name 唯一」（两个部分唯一索引，见迁移 012）
+    owner_id = Column(PGUUID(as_uuid=True))
+    style_name = Column(Text, nullable=False)
     keywords = Column(Text, nullable=False, default="")
     description = Column(Text, nullable=False, default="")
     enabled = Column(Boolean, nullable=False, default=True)

@@ -172,6 +172,19 @@ const TasksView = {
       finally { this.fixing = false; }
     },
     close() { this.detail = null; },
+    async saveAsMyStyle() {
+      // 存为我的风格（2026-08-28）：反查风格描述词后预填进设置页风格库表单
+      const t = this.detailTask || {};
+      let desc = '';
+      try {
+        const r = await api.get('/api/styles/lookup?style_name=' + encodeURIComponent(t.gen_image_style)
+          + '&actor=' + encodeURIComponent(this.actorName));
+        desc = r.description || '';
+      } catch (e) { /* 反查失败也照常跳转，描述词留空 */ }
+      localStorage.setItem('qvp_style_prefill', JSON.stringify(
+        { style_name: t.gen_image_style || '', keywords: '', description: desc }));
+      location.hash = '#/settings';
+    },
     pageCopyOf(i) {
       const pcs = (this.detail && this.detail.page_copies) || [];
       const p = pcs.find(x => x.page_index === i);
@@ -463,6 +476,9 @@ const TasksView = {
             <span class="tag" :class="statusTag(detailTask.status).cls">{{ statusTag(detailTask.status).label }}</span>
             <span class="tag tag-blue">{{ modeLabel(detailTask.mode) }}</span>
             <span v-if="detailTask.gen_image_style" class="tag tag-green" title="生图前按选题与正文自动判定的视觉风格，6 张图共用">图片风格：{{ detailTask.gen_image_style }}</span>
+            <button v-if="detailTask.gen_image_style" class="btn btn-outline btn-sm" style="margin-left:6px"
+                    title="把该风格名+描述词预填进设置页风格库表单，补匹配关键词后保存到个人库"
+                    @click="saveAsMyStyle">存为我的风格</button>
             <span v-if="detail.risk" class="tag" :class="riskTag(detail.risk.level).cls">风险：{{ riskTag(detail.risk.level).label }}</span>
             <span class="muted" style="margin-left:8px">{{ fmtTime(detailTask.created_at) }}</span>
           </p>
