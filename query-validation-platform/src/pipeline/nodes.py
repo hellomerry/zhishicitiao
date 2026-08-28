@@ -485,9 +485,11 @@ async def node_page_split(input_data: dict) -> dict:
 
 
 async def _generate_single_asset(task_id, page_index: int, prompt: str,
-                                 reference_image_urls=None) -> dict:
+                                 reference_image_urls=None,
+                                 provider: str = None) -> dict:
     from src.gateway.image_gen import generate_image
-    r = await generate_image(prompt, reference_image_urls=reference_image_urls)
+    r = await generate_image(prompt, reference_image_urls=reference_image_urls,
+                             provider=provider)
     return {"task_id": task_id, "page_index": page_index, "hash": r["hash"],
             "image_url": r["image_url"],
             "source_type": "ai_generated", "copyright_status": "clear",
@@ -496,7 +498,7 @@ async def _generate_single_asset(task_id, page_index: int, prompt: str,
 
 async def _dedupe_and_validate(asset: dict, prompt: str, reference_urls,
                                task_id, page_index: int, seen_hashes: set,
-                               page_body: str = "") -> tuple:
+                               page_body: str = "", provider: str = None) -> tuple:
     """内容级去重 + 尺寸校验：下载图片字节算内容 hash，与本任务已出图重复则换构图重生成一次；
     宽高比偏离 3:4 则在 model_version 上标记（交付导出时会统一归一到 1152x1536）。
     text_composite_enabled 且给了 page_body 时，AI 图只是无字背景：在本地化前把
@@ -512,7 +514,7 @@ async def _dedupe_and_validate(asset: dict, prompt: str, reference_urls,
         if content_hash in seen_hashes:
             r2 = await _generate_single_asset(
                 task_id, page_index, prompt + "（请换一种与之前不同的构图和视角）",
-                reference_urls)
+                reference_urls, provider=provider)
             extra += 1
             data2, ctype = await fetch_image_bytes(r2["image_url"])
             asset = r2
@@ -544,7 +546,7 @@ async def _dedupe_and_validate(asset: dict, prompt: str, reference_urls,
 
 async def _text_quality_gate(asset: dict, prompt: str, reference_urls,
                              task_id, page_index: int, expected_text: str,
-                             seen_hashes: set) -> tuple:
+                             seen_hashes: set, provider: str = None) -> tuple:
     """出图文字质检（2026-08-25 用户反馈「文字扭曲概率非常大」）：OCR 识别图上文字，
     与分页文案对撞，相似度低于阈值判为文字扭曲，换构图重生成
     （最多 settings.asset_text_max_attempts 次）；仍不达标在 model_version 打
@@ -578,10 +580,11 @@ async def _text_quality_gate(asset: dict, prompt: str, reference_urls,
                       else "（上一版图中文字扭曲/乱码：请进一步减少图中文字，"
                            "只保留大标题和最关键的一行字，确保每个汉字笔画正确）")
         regen = await _generate_single_asset(
-            task_id, page_index, prompt + retry_hint, reference_urls)
+            task_id, page_index, prompt + retry_hint, reference_urls,
+            provider=provider)
         asset, dedupe_extra = await _dedupe_and_validate(
             regen, prompt, reference_urls, task_id, page_index, seen_hashes,
-            page_body=expected_text)
+            page_body=expected_text, provider=provider)
         attempts += dedupe_extra
 
 
@@ -596,6 +599,9 @@ async def node_asset_gen(input_data: dict) -> dict:
             select(Task).where(Task.id == input_data["task_id"]))).scalar_one()
         mode = task.mode or "general"
         owner_id = task.created_by
+        # 任务级生图模型（2026-08-28）：NULL=全局默认 gpt-image-2，
+        # 用户在「待生图」确认环节手动选择其它模型时才写入（迁移 010）
+        img_provider = task.image_provider
         pages = await session.execute(
             select(PageCopy).where(PageCopy.task_id == input_data["task_id"]))
         page_list = pages.scalars().all()
@@ -651,17 +657,18 @@ async def node_asset_gen(input_data: dict) -> dict:
     for i in range(1, 7):
         refs_i = _page_refs(i) if mode in ("compare", "single") else None
         r = await _generate_single_asset(
-            input_data["task_id"], i, prompts[i - 1], refs_i)
+            input_data["task_id"], i, prompts[i - 1], refs_i,
+            provider=img_provider)
         if not settings.mock_image_gen:
             page_body = page_list[i - 1].body if i - 1 < len(page_list) else ""
             r, extra = await _dedupe_and_validate(
                 r, prompts[i - 1], refs_i, input_data["task_id"], i, seen_hashes,
-                page_body=page_body or "")
+                page_body=page_body or "", provider=img_provider)
             extra_gen += extra
             # 文字质检：OCR 对撞分页文案，扭曲图自动重生成（文字扭曲是最高频客诉）
             r, text_extra, gate_cost = await _text_quality_gate(
                 r, prompts[i - 1], refs_i, input_data["task_id"], i,
-                page_body or "", seen_hashes)
+                page_body or "", seen_hashes, provider=img_provider)
             extra_gen += text_extra
             ocr_gate_cost += gate_cost
         results.append(r)
@@ -674,7 +681,7 @@ async def node_asset_gen(input_data: dict) -> dict:
     return {"asset_count": len(results),
             "image_urls": [r.get("image_url") for r in results if r.get("image_url")],
             "cost_cny": 0 if settings.mock_image_gen
-                        else (len(results) + extra_gen) * cost_per_image()
+                        else (len(results) + extra_gen) * cost_per_image(img_provider)
                              + ocr_gate_cost}
 
 

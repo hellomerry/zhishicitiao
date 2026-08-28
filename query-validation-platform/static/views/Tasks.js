@@ -10,6 +10,7 @@ const TasksView = {
       live: {},              // task_id -> 内存实时态（current_node/debug/imgs）
       detail: null, detailError: '', retrying: false,
       uploadSubject: '',  // 手动上传参考图的标注（compare 模式 A:/B: 前缀）
+      imageProvider: 'openai_images', savingModel: false,  // 任务级生图模型（默认 gpt-image-2）
       fixMode: false, fixMarks: {}, fixing: false,   // 创建者自助修正（定点标记+自动重生成）
       selected: {},           // 勾选的任务 id -> true（仅终态任务可勾选，用于批量移入回收站）
       exportJob: null, exportTimer: null,   // 任务式导出进度 {id,status,total,done,detail}
@@ -130,8 +131,22 @@ const TasksView = {
     async open(t) {
       this.detailError = ''; this.detail = null;
       this.fixMode = false; this.fixMarks = {}; this.fixing = false;
-      try { this.detail = await api.get(`/api/tasks/${t.id}/detail?actor=` + encodeURIComponent(this.actorName)); }
+      try {
+        this.detail = await api.get(`/api/tasks/${t.id}/detail?actor=` + encodeURIComponent(this.actorName));
+        // 任务级生图模型（2026-08-28）：NULL/缺省 = 默认 gpt-image-2
+        this.imageProvider = (this.detail.task && this.detail.task.image_provider) || 'openai_images';
+      }
       catch (e) { this.detailError = e.message; }
+    },
+    async saveImageModel() {
+      if (!this.detailTask) return;
+      this.savingModel = true;
+      try {
+        await api.post(`/api/tasks/${this.detailTask.id}/image_model`,
+          { actor: this.actorName, provider: this.imageProvider });
+        this.detail.task.image_provider = this.imageProvider;
+      } catch (e) { alert('设置生图模型失败：' + e.message); await this.open(this.detailTask); }
+      finally { this.savingModel = false; }
     },
     fixKey(t, p) { return `${t}:${p}`; },
     isFixMarked(t, p) { return !!this.fixMarks[this.fixKey(t, p)]; },
@@ -291,7 +306,8 @@ const TasksView = {
       // 实图保底 6 张（2026-08-27）：不足时提示先重搜/上传补足，不强制拦截
       const warn = (this.detailTask.mode !== 'general' && this.refAssets.length < 6)
         ? `⚠ 当前参考图仅 ${this.refAssets.length} 张（少于 6 张），建议先「重搜/上传参考图」补足。\n\n` : '';
-      if (!confirm(warn + '确认正文、分页文案与参考图无误，开始生图？\n\n生图是最贵步骤（每任务 6 张）。确认前可先重搜/上传/删除参考图；放行后自动完成生图、OCR、校验并进入审核。')) return;
+      const modelName = this.imageProvider === 'gemini' ? 'Gemini 3 Pro Image' : 'gpt-image-2（默认）';
+      if (!confirm(warn + `确认正文、分页文案与参考图无误，使用「${modelName}」开始生图？\n\n生图是最贵步骤（每任务 6 张）。确认前可先重搜/上传/删除参考图；放行后自动完成生图、OCR、校验并进入审核。`)) return;
       this.retrying = true;
       try {
         await api.post(`/api/tasks/${this.detailTask.id}/start_gen?actor=` + encodeURIComponent(this.actorName));
@@ -462,6 +478,13 @@ const TasksView = {
 
           <div v-if="canStartGen" class="card" style="margin:12px 0;border:1px solid #f59e0b">
             <p style="margin:0"><b>待生图确认</b>：<span class="muted">正文、分页文案与实景参考图已就绪。请检查下方内容：参考图可「重搜/上传/删除」调整；确认无误后点「▶ 确认并开始生图」，系统将生成 6 张配图并完成校验进入审核。</span></p>
+            <p style="margin:8px 0 0"><b>生图模型</b>：
+              <select v-model="imageProvider" @change="saveImageModel" :disabled="savingModel" style="margin:0 6px">
+                <option value="openai_images">gpt-image-2（默认，约 ¥0.2/张）</option>
+                <option value="gemini">Gemini 3 Pro Image（写实风，约 ¥0.6/张）</option>
+              </select>
+              <span class="muted" style="font-size:12px">默认 gpt-image-2；手动选择其它模型仅对本任务生效</span>
+            </p>
             <p v-if="detailTask.mode !== 'general' && refAssets.length < 6" style="margin:6px 0 0;color:#c00">⚠ 参考图仅 {{ refAssets.length }} 张（少于保底 6 张），建议先「重搜/上传参考图」补足再生图。</p>
           </div>
 

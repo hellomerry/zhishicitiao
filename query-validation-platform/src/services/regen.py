@@ -139,6 +139,8 @@ async def partial_regen(task_id) -> dict:
             select(Task).where(Task.id == task_id))).scalar_one()
         mode = task.mode or "general"
         owner_id = task.created_by
+        # 任务级生图模型（2026-08-28，迁移 010）：定点重生成沿用任务所选模型
+        img_provider = task.image_provider
         marks = await get_open_marks(session, task_id)
         rounds, _ = await get_rejection_feedback(session, task_id)
     if not marks:
@@ -223,7 +225,8 @@ async def partial_regen(task_id) -> dict:
             if fb:
                 prompt += ("\n\n【审核意见】该页上一版本被人工审核驳回："
                            + "；".join(fb) + "。请重新绘制，必须避免上述问题。")
-            r = await _generate_single_asset(task_id, p, prompt, reference_urls)
+            r = await _generate_single_asset(task_id, p, prompt, reference_urls,
+                                             provider=img_provider)
             if not settings.mock_image_gen:
                 r, extra = await _dedupe_and_validate(
                     r, prompt, reference_urls, task_id, p, seen_hashes,
@@ -266,7 +269,7 @@ async def partial_regen(task_id) -> dict:
             await asyncio.sleep(settings.image_gen_delay_seconds)
         from src.gateway.image_gen import cost_per_image
         cost = ocr_cost if settings.mock_image_gen else (
-            (len(done_pages) + extra_gen) * cost_per_image()
+            (len(done_pages) + extra_gen) * cost_per_image(img_provider)
             + ocr_cost)
         return {"pages": done_pages, "extra_gen": extra_gen, "cost_cny": cost,
                 "prompt_version": f"asset_regen_r{rounds}"}

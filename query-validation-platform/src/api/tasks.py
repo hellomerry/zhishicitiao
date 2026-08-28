@@ -284,6 +284,7 @@ async def task_detail(task_id: str, actor: str = ""):
                 "sla_hours": task.sla_hours,
                 "priority": task.priority,
                 "status": task.status,
+                "image_provider": task.image_provider,  # 任务级生图模型（NULL=默认 gpt-image-2）
                 "template_id": str(task.template_id) if task.template_id else None,
                 "created_at": task.created_at.isoformat() if task.created_at else None,
                 "created_by": str(task.created_by) if task.created_by else None,
@@ -351,6 +352,49 @@ async def start_gen(task_id: str, actor: str = "anonymous"):
     await log_action(actor, "start_gen",
                      f"确认文案与参考图，开始生图：{query[:50]}", task_id=tid)
     return {"ok": True, "task_id": str(tid), "status": "draft", "kind": "gen_resume"}
+
+
+# 任务级生图模型可选值（2026-08-28）：默认 openai_images（gpt-image-2），
+# 其它模型仅在用户手动选择时生效
+_IMAGE_PROVIDERS = ("openai_images", "gemini")
+
+
+class ImageModelIn(BaseModel):
+    actor: str = "anonymous"
+    provider: str
+
+
+@router.post("/api/tasks/{task_id}/image_model")
+async def set_image_model(task_id: str, payload: ImageModelIn):
+    """设置任务级生图模型（2026-08-28 用户要求）：默认 gpt-image-2，其它模型
+    （gemini 等）仅在用户手动选择时写入 tasks.image_provider，生图/定点重生成/
+    成本取价均按任务值。仅「排队中/待生图」可改（生图已开始后改会前后不一致）。
+    归属隔离：非属主非 admin → 404。"""
+    from src.services.ownership import get_actor, check_owner
+    if payload.provider not in _IMAGE_PROVIDERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的生图模型：{payload.provider}（可选 {list(_IMAGE_PROVIDERS)}）")
+    try:
+        tid = uuid.UUID(task_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid task_id")
+    async with SessionLocal() as session:
+        uid, role = await get_actor(session, payload.actor)
+        task = (await session.execute(
+            select(Task).where(Task.id == tid))).scalars().first()
+        if not task:
+            raise HTTPException(status_code=404, detail="task not found")
+        check_owner(task, uid, role)
+        if task.status not in ("draft", "confirm_gen"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"当前状态（{task.status}）不可修改生图模型：仅排队中/待生图可改")
+        task.image_provider = payload.provider
+        await session.commit()
+    await log_action(payload.actor, "set_image_model",
+                     f"生图模型={payload.provider}", task_id=str(tid))
+    return {"ok": True, "task_id": str(tid), "image_provider": payload.provider}
 
 
 @router.post("/api/tasks/{task_id}/fix")

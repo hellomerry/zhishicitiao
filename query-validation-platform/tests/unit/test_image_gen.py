@@ -210,3 +210,32 @@ async def test_fetch_image_bytes_data_uri():
     from src.gateway.ocr import fetch_image_bytes
     data, ctype = await fetch_image_bytes("data:image/png;base64,aGVsbG8taW1n")
     assert data == b"hello-img" and ctype == "image/png"
+
+
+@pytest.mark.asyncio
+async def test_provider_param_overrides_global(monkeypatch):
+    """任务级手动选择（2026-08-28）：generate_image(provider=...) 覆盖全局配置——
+    全局默认 openai_images 时，任务选 gemini 只对本任务生效。"""
+    monkeypatch.setattr(image_gen.settings, "image_provider", "openai_images")
+    monkeypatch.setattr(image_gen.settings, "mock_image_gen", False)
+    with patch.object(image_gen, "_gemini_generate",
+                      new=AsyncMock(return_value={"image_url": "u", "hash": "h",
+                                                  "model_version": "gemini"})) as gem, \
+         patch.object(image_gen, "_generate",
+                      new=AsyncMock(return_value={"image_url": "u", "hash": "h",
+                                                  "model_version": "gpt-image-2"})) as gen:
+        await _generate_image("p", provider="gemini")
+        gem.assert_awaited_once()
+        gen.assert_not_called()
+        await _generate_image("p")  # 不传 → 全局默认
+        gen.assert_awaited_once()
+
+
+def test_cost_per_image_explicit_provider(monkeypatch):
+    """成本取价按任务所选模型（2026-08-28）：provider 参数优先于全局配置。"""
+    monkeypatch.setattr(image_gen.settings, "image_provider", "openai_images")
+    monkeypatch.setattr(image_gen.settings, "gemini_image_cost_per_image_cny", 0.6)
+    monkeypatch.setattr(image_gen.settings, "image_cost_per_image_cny", 0.2)
+    assert image_gen.cost_per_image("gemini") == 0.6
+    assert image_gen.cost_per_image("openai_images") == 0.2
+    assert image_gen.cost_per_image(None) == 0.2

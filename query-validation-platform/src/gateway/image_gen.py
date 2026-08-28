@@ -38,9 +38,11 @@ def _mock_result(prompt: str) -> dict:
 
 async def generate_image(prompt: str, size: str = None,
                          reference_image_urls: list[str] | None = None,
-                         max_retries: int = 3) -> dict:
-    """按 settings.image_provider 生成一张图；reference_image_urls 非空则图生图。
+                         max_retries: int = 3, provider: str = None) -> dict:
+    """生成一张图；reference_image_urls 非空则图生图。
 
+    provider：None 用全局配置 settings.image_provider（默认 gpt-image-2）；
+    任务级手动选择时由调用方传入（2026-08-28，用户手动选择才生效其它模型）。
     mock_image_gen 开启时返回占位图；否则瞬时错误（SSL/502/400）做退避重试。
     provider=gemini 时走 Gemini generateContent 协议（原生多模态，参考图与提示词
     同请求内联，无独立 edits 端点）。
@@ -48,9 +50,10 @@ async def generate_image(prompt: str, size: str = None,
     if settings.mock_image_gen:
         return _mock_result(prompt)
     size = size or IMAGE_SIZE
+    prov = provider or settings.image_provider
     for attempt in range(max_retries):
         try:
-            if settings.image_provider == "gemini":
+            if prov == "gemini":
                 return await _gemini_generate(prompt, reference_image_urls, size)
             if reference_image_urls:
                 try:
@@ -68,10 +71,12 @@ async def generate_image(prompt: str, size: str = None,
             await asyncio.sleep(2 * (2 ** attempt))
 
 
-def cost_per_image() -> float:
-    """当前 provider 的单张生图成本（元）。Gemini 与 gpt-image-2 单价不同，
-    成本记账统一走这里，不要在调用方直接读 settings.image_cost_per_image_cny。"""
-    if settings.image_provider == "gemini":
+def cost_per_image(provider: str = None) -> float:
+    """指定 provider 的单张生图成本（元）。Gemini 与 gpt-image-2 单价不同，
+    成本记账统一走这里，不要在调用方直接读 settings.image_cost_per_image_cny。
+    provider=None 时用全局配置；任务级选择模型时传任务的 image_provider。"""
+    prov = provider or settings.image_provider
+    if prov == "gemini":
         return settings.gemini_image_cost_per_image_cny
     return settings.image_cost_per_image_cny
 

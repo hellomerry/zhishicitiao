@@ -45,7 +45,7 @@ async def _make_task() -> str:
 
 
 def _gen_side(calls):
-    def side(prompt, reference_image_urls=None):
+    def side(prompt, reference_image_urls=None, provider=None):
         calls["gen"] += 1
         return {"hash": f"h{calls['gen']}",
                 "image_url": f"https://example.com/{calls['gen']}.png",
