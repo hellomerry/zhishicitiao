@@ -13,8 +13,11 @@ from src.gateway.cost_tracker import estimate_cost
 OCR_PROMPT = "请提取图片中的全部文字，按阅读顺序直接输出文字内容，不要加任何解释或Markdown标记。"
 
 
-async def fetch_image_bytes(image_url: str) -> tuple:
+async def fetch_image_bytes(image_url: str, timeout: float = 60) -> tuple:
     """取配图原始字节，返回 (bytes, content_type)。
+
+    timeout：HTTP 取图超时（秒），默认 60 不变；参考图批量下载链路传更小值
+    （2026-08-28：参考图串行 60s 超时会把 entity_bind 拖到几分钟）。
 
     生图代理（openox）部分上游返回的是"签名内联 URL"——图片数据直接编码在
     URL 路径里（/v1/images/content/<base64url>.<sig>），这种 URL 超过 4MB，
@@ -50,7 +53,7 @@ async def fetch_image_bytes(image_url: str) -> tuple:
                       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
         "Referer": "https://www.baidu.com/",
     }
-    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
         resp = await client.get(image_url, headers=headers)
         resp.raise_for_status()
         ctype = resp.headers.get("Content-Type", "image/png").split(";")[0]

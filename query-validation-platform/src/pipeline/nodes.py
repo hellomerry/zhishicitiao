@@ -191,36 +191,54 @@ def _image_size(data: bytes):
 
 async def _download_quality_refs(task_id, candidates, start_index, page_tag,
                                  seen: dict | None = None, min_keep: int = 6):
-    """逐张下载候选图并本地化：达最低分辨率的全保留（不设上限）+ 排重，
+    """下载候选图并本地化：达最低分辨率的全保留（不设上限）+ 排重，
     不足 min_keep 张时用次优图补齐保底（2026-08-27 用户要求：实图最少 6 张）。
 
     保留策略：无最高限制，只有最低限制（宽高 ≥ 阈值）+ 排重——URL 级 + 内容
     md5 级两级排重；seen 由调用方跨搜索组维护，避免同一张实图被不同搜索词
     重复收进。达标图不足 min_keep 时，依次用「下载成功但不达标」（按像素降序）
     和「下载失败」（沿用原地址，展示层走代理兜底）补齐到 min_keep。
+
+    并发下载（2026-08-28：串行 60s/张太慢、候选池放大后更跑不动）：先串行规划
+    要下载的 URL（seen 互斥无竞态），再 Semaphore(8) 并发取字节（单张超时 20s），
+    最后串行做尺寸判定/落盘/排重——返回结构与过滤口径与串行版完全一致。
     返回 (refs, filtered, dupes)，ref 含 url/origin/engine/hash（内容 md5）。
     """
+    import asyncio
     if seen is None:
         seen = {"hashes": set(), "urls": set()}
-    good = []    # [(像素量, ref)] 达标
-    lowres = []  # [(像素量或0, ref)] 下载成功但不达标（含读不出尺寸）
-    failed = []  # [ref] 下载失败/空
-    filtered = dupes = 0
+    # 1) 串行规划：URL 级排重，确定本轮要下载的候选
+    planned = []   # [(ref, url)]
+    dupes = 0
     for it in candidates:
         url = it["image_url"]
         if url in seen["urls"]:
             dupes += 1
             continue
         seen["urls"].add(url)
-        ref = {"url": url, "origin": None,
-               "engine": it.get("engine", "search"),
-               "hash": hashlib.md5(url.encode()).hexdigest()}
-        try:
-            data, ctype = await fetch_image_bytes(url)
-        except Exception:
+        planned.append(({"url": url, "origin": None,
+                         "engine": it.get("engine", "search"),
+                         "hash": hashlib.md5(url.encode()).hexdigest()}, url))
+    # 2) 并发取字节：Semaphore(8) 限流，结果顺序与 planned 一致
+    sem = asyncio.Semaphore(8)
+
+    async def _one(url):
+        async with sem:
+            return await fetch_image_bytes(url, timeout=20)
+
+    results = await asyncio.gather(*(_one(u) for _, u in planned),
+                                   return_exceptions=True)
+    # 3) 串行判定：尺寸过滤 / 内容 md5 排重 / 落盘
+    good = []    # [(像素量, ref)] 达标
+    lowres = []  # [(像素量或0, ref)] 下载成功但不达标（含读不出尺寸）
+    failed = []  # [ref] 下载失败/空
+    filtered = 0
+    for (ref, url), r in zip(planned, results):
+        if isinstance(r, Exception):
             filtered += 1
             failed.append(ref)
             continue
+        data, ctype = r
         if not data:
             filtered += 1
             failed.append(ref)
@@ -249,13 +267,22 @@ async def _download_quality_refs(task_id, candidates, start_index, page_tag,
     return refs, filtered, dupes
 
 
+# 补搜变体词（2026-08-28 用户反馈「实图还是太少」）：按主体跟踪达标+保底填充后
+# 的张数，不足 6 张时依次用这些变体词补搜，每个主体最多补 2 轮（仍走同一 seen 排重）
+_RESCUE_QUERIES = ("{name} 实拍", "{name} 外观 场景")
+_RESCUE_COUNT = 12        # 补搜每轮抓取数
+_REF_MIN_KEEP = 6         # 每主体实图保底张数
+
+
 async def node_entity_bind(input_data: dict) -> dict:
     """搜实景图/实物图，存为 official 素材（compare/single 作参考图；general 跳过）。
 
     质量策略：搜索词带「高清」提高源头质量；下载后只按最低分辨率过滤 + 排重，
-    达标的全部保留不设上限（2026-08-27 用户要求，mock 模式不下载不过滤，
-    保留旧行为）。ref_filtered 记录被质量过滤淘汰的张数，ref_dupes 记录排重
-    跳过的张数。
+    达标的全部保留不设上限（2026-08-27 用户要求，mock 模式不下载不过滤不补搜，
+    保留旧行为）。候选池 2026-08-28 放大（compare 每主体 20+12、single 25，
+    bing limit=30 实测能返回 30 张）；每个主体搜完不足 6 张自动用变体词补搜
+    （最多 2 轮）。ref_filtered 记录被质量过滤淘汰的张数，ref_dupes 记录排重
+    跳过的张数，ref_rescoped 记录补搜轮次。
     """
     import hashlib
     from src.models.tasks import Task
@@ -270,56 +297,92 @@ async def node_entity_bind(input_data: dict) -> dict:
         return {"searched_images": 0}
     # compare 模式拆主体 A/B 分搜（各带整体图 + 细节/侧面图，覆盖多角度对比），
     # 拆不出来时退回整词搜索（旧行为）；single 模式整词搜。
-    groups = []  # [(tag, 搜索词, 抓取数)]
+    # units：[(主体名, [(tag, 搜索词, 抓取数)])]——补搜按主体（unit）跟踪张数
     if mode == "compare":
         pair = await _split_compare_subjects(query)
     else:
         pair = None
     if pair:
-        for label, name in (("A", pair[0]), ("B", pair[1])):
-            groups.append((f"{label}:{name}", f"{name} 高清", 6))
-            groups.append((f"{label}:{name}（细节）", f"{name} 细节 侧面 高清", 4))
+        units = [(name, [(f"{label}:{name}", f"{name} 高清", 20),
+                         (f"{label}:{name}（细节）", f"{name} 细节 侧面 高清", 12)])
+                 for label, name in (("A", pair[0]), ("B", pair[1]))]
     else:
-        groups.append((query, f"{query} 高清", 10))
+        units = [(query, [(query, f"{query} 高清", 25)])]
     filtered_total = 0
     dupes_total = 0
+    rescoped_total = 0   # 补搜轮次（所有主体合计）
+    search_calls = 0
     saved = 0
     # 跨搜索组共享排重集合：同一张实图不会被不同搜索词重复收进
     seen = {"hashes": set(), "urls": set()}
     async with SessionLocal() as session:
-        for tag, q, cnt in groups:
-            got = await search_image(q, count=cnt)
-            if settings.mock_image_gen:
-                refs = []
-                for g in got:
-                    if g["image_url"] in seen["urls"]:
-                        dupes_total += 1
-                        continue
-                    seen["urls"].add(g["image_url"])
-                    refs.append({"url": g["image_url"], "origin": None,
-                                 "engine": g.get("engine", "search"),
-                                 "hash": hashlib.md5(
-                                     g["image_url"].encode()).hexdigest()})
-            else:
-                refs, filtered, dupes = await _download_quality_refs(
-                    input_data["task_id"], got, saved + 1, tag, seen)
+        for name, groups in units:
+            unit_kept = 0
+            for tag, q, cnt in groups:
+                got = await search_image(q, count=cnt)
+                search_calls += 1
+                if settings.mock_image_gen:
+                    refs = []
+                    filtered = dupes = 0
+                    for g in got:
+                        if g["image_url"] in seen["urls"]:
+                            dupes += 1
+                            continue
+                        seen["urls"].add(g["image_url"])
+                        refs.append({"url": g["image_url"], "origin": None,
+                                     "engine": g.get("engine", "search"),
+                                     "hash": hashlib.md5(
+                                         g["image_url"].encode()).hexdigest()})
+                else:
+                    refs, filtered, dupes = await _download_quality_refs(
+                        input_data["task_id"], got, saved + 1, tag, seen)
                 filtered_total += filtered
                 dupes_total += dupes
-            for ref in refs:
-                saved += 1
-                session.add(Asset(
-                    task_id=input_data["task_id"], page_index=saved,
-                    subject=tag, source_type="official", copyright_status="unknown",
-                    hash=ref.get("hash") or hashlib.md5(
-                        ref["url"].encode()).hexdigest(),
-                    image_url=ref["url"], origin_url=ref["origin"],
-                    model_version=ref["engine"],
-                    is_illustration=False))
+                for ref in refs:
+                    saved += 1
+                    session.add(Asset(
+                        task_id=input_data["task_id"], page_index=saved,
+                        subject=tag, source_type="official",
+                        copyright_status="unknown",
+                        hash=ref.get("hash") or hashlib.md5(
+                            ref["url"].encode()).hexdigest(),
+                        image_url=ref["url"], origin_url=ref["origin"],
+                        model_version=ref["engine"],
+                        is_illustration=False))
+                unit_kept += len(refs)
+            # 补搜循环：本主体达标+保底后仍不足 6 张 → 变体词补搜（最多 2 轮，
+            # 同一 seen 排重；补搜图打「（补搜）」标，compare 仍带 A:/B: 前缀，
+            # 不影响 asset_gen 的分主体参考图路由）。mock 模式不补搜（测试依赖旧行为）
+            rescoped = 0
+            while (not settings.mock_image_gen and unit_kept < _REF_MIN_KEEP
+                   and rescoped < len(_RESCUE_QUERIES)):
+                q = _RESCUE_QUERIES[rescoped].format(name=name)
+                rescoped += 1
+                got = await search_image(q, count=_RESCUE_COUNT)
+                search_calls += 1
+                refs, filtered, dupes = await _download_quality_refs(
+                    input_data["task_id"], got, saved + 1,
+                    f"{groups[0][0]}（补搜）", seen)
+                filtered_total += filtered
+                dupes_total += dupes
+                for ref in refs:
+                    saved += 1
+                    session.add(Asset(
+                        task_id=input_data["task_id"], page_index=saved,
+                        subject=f"{groups[0][0]}（补搜）", source_type="official",
+                        copyright_status="unknown",
+                        hash=ref.get("hash") or hashlib.md5(
+                            ref["url"].encode()).hexdigest(),
+                        image_url=ref["url"], origin_url=ref["origin"],
+                        model_version=ref["engine"],
+                        is_illustration=False))
+                unit_kept += len(refs)
+            rescoped_total += rescoped
         await session.commit()
     return {"searched_images": saved, "ref_filtered": filtered_total,
-            "ref_dupes": dupes_total,
+            "ref_dupes": dupes_total, "ref_rescoped": rescoped_total,
             "subjects": list(pair) if pair else [],
-            "cost_cny": settings.openserp_cost_per_call * len(groups)}
+            "cost_cny": settings.openserp_cost_per_call * search_calls}
 
 
 async def node_evidence_build(input_data: dict) -> dict:

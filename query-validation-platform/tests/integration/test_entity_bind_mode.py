@@ -27,7 +27,7 @@ def _candidates(n_small, sizes):
              "source": "bing", "engine": "bing"} for i in range(n_small)]
 
 
-async def _fetch_by_url(image_url):
+async def _fetch_by_url(image_url, timeout=60):
     """按 URL 尾号奇偶返回大/小图字节（偶大奇小）。"""
     n = int(image_url.rsplit("/", 1)[1].split(".")[0])
     return (_BIG if n % 2 == 0 else _SMALL), "image/png"
@@ -62,7 +62,7 @@ async def test_entity_bind_keeps_all_passing_no_cap():
     tid = await _make_task(mode="single")
     cands = _candidates(10, None)
 
-    async def fetch(url):
+    async def fetch(url, timeout=60):
         n = int(url.rsplit("/", 1)[1].split(".")[0])
         return _png_bytes(1200, 1600, (n * 20 % 255, 30, 30)), "image/png"
 
@@ -71,7 +71,7 @@ async def test_entity_bind_keeps_all_passing_no_cap():
          patch("src.pipeline.nodes.fetch_image_bytes", new=fetch):
         out = await node_entity_bind({"task_id": tid})
     args, kwargs = mock_search.call_args
-    assert args[0].endswith(" 高清") and kwargs["count"] == 10
+    assert args[0].endswith(" 高清") and kwargs["count"] == 25
     assert out["searched_images"] == 10
     assert out["ref_filtered"] == 0
     assert out["ref_dupes"] == 0
@@ -94,7 +94,7 @@ async def test_entity_bind_filters_low_quality_and_dedupes():
     cands = _candidates(10, None)
     big0 = _png_bytes(1200, 1600, (10, 30, 30))
 
-    async def fetch(url):
+    async def fetch(url, timeout=60):
         n = int(url.rsplit("/", 1)[1].split(".")[0])
         data = {0: big0, 2: _png_bytes(1200, 1600, (40, 30, 30)),
                 4: _MID, 6: big0}.get(n, _SMALL)  # 6 与 0 内容相同 → 排重
@@ -123,7 +123,7 @@ async def test_entity_bind_fallback_when_all_low_quality():
     tid = await _make_task(mode="single")
     cands = _candidates(10, None)
 
-    async def fetch(url):
+    async def fetch(url, timeout=60):
         return _SMALL, "image/png"
 
     with patch("src.gateway.image_search.search_image",
@@ -243,7 +243,7 @@ async def test_ref_search_appends_quality_assets():
     tid = await _owned_task(owner)
     cands = _candidates(8, None)
 
-    async def fetch(url):
+    async def fetch(url, timeout=60):
         n = int(url.rsplit("/", 1)[1].split(".")[0])
         if n < 5:
             return _png_bytes(1200, 1600, (n * 40 + 10, 30, 30)), "image/png"
@@ -327,3 +327,131 @@ async def test_ref_upload_non_owner_404():
             f"/api/tasks/{tid}/ref_upload", data={"actor": other},
             files=[("files", ("a.png", _png_bytes(1000, 800), "image/png"))])
         assert r.status_code == 404
+
+
+# ---------- 候选池放大 + 补搜循环 + 并发下载（2026-08-28） ----------
+
+def _uniq_cands(tag, n):
+    """n 个不同 URL 的候选（供补搜测试按搜索词配置返回）。"""
+    return [{"title": f"{tag}{i}", "image_url": f"http://img.test/{tag}{i}.png",
+             "source": "bing", "engine": "bing"} for i in range(n)]
+
+
+async def _fetch_big_distinct(url, timeout=60):
+    """每张 URL 返回内容互不相同的大图（按 URL 取色，避免 md5 排重）。"""
+    import hashlib
+    h = hashlib.md5(url.encode()).hexdigest()
+    return _png_bytes(1200, 1600, (int(h[:2], 16), int(h[2:4], 16), int(h[4:6], 16))), "image/png"
+
+
+@pytest.mark.asyncio
+async def test_entity_bind_rescues_when_unit_short():
+    """补搜触发：首轮只拿到 3 张达标（<6）→ 用「实拍」补搜一轮补足，不触发第二轮。"""
+    tid = await _make_task(mode="single", query="空气炸锅 测评")
+    plan = {"空气炸锅 测评 高清": _uniq_cands("a", 3),
+            "空气炸锅 测评 实拍": _uniq_cands("b", 5)}
+    calls = []
+
+    async def fake_search(q, count=0):
+        calls.append((q, count))
+        return plan.get(q, [])
+
+    with patch("src.gateway.image_search.search_image", side_effect=fake_search), \
+         patch("src.pipeline.nodes.fetch_image_bytes", new=_fetch_big_distinct):
+        out = await node_entity_bind({"task_id": tid})
+    assert calls == [("空气炸锅 测评 高清", 25), ("空气炸锅 测评 实拍", 12)]
+    assert out["searched_images"] == 8
+    assert out["ref_rescoped"] == 1
+    assert out["ref_filtered"] == 0 and out["ref_dupes"] == 0
+    async with SessionLocal() as session:
+        assets = (await session.execute(
+            select(Asset).where(Asset.task_id == tid))).scalars().all()
+        assert len(assets) == 8
+        assert len([a for a in assets if "补搜" in a.subject]) == 5
+
+
+@pytest.mark.asyncio
+async def test_entity_bind_rescue_two_rounds_then_stops():
+    """补搜最多 2 轮：两轮后仍不足 6 张也不再补（变体词用完即止）。"""
+    tid = await _make_task(mode="single", query="空气炸锅 测评")
+    plan = {"空气炸锅 测评 高清": _uniq_cands("a", 2),
+            "空气炸锅 测评 实拍": _uniq_cands("b", 1),
+            "空气炸锅 测评 外观 场景": _uniq_cands("c", 1)}
+    calls = []
+
+    async def fake_search(q, count=0):
+        calls.append(q)
+        return plan.get(q, [])
+
+    with patch("src.gateway.image_search.search_image", side_effect=fake_search), \
+         patch("src.pipeline.nodes.fetch_image_bytes", new=_fetch_big_distinct):
+        out = await node_entity_bind({"task_id": tid})
+    assert calls == ["空气炸锅 测评 高清", "空气炸锅 测评 实拍", "空气炸锅 测评 外观 场景"]
+    assert out["searched_images"] == 4
+    assert out["ref_rescoped"] == 2
+
+
+@pytest.mark.asyncio
+async def test_entity_bind_no_rescue_when_enough():
+    """补搜不触发：首轮即达 6 张以上，不再发起变体词搜索。"""
+    tid = await _make_task(mode="single", query="空气炸锅 测评")
+    calls = []
+
+    async def fake_search(q, count=0):
+        calls.append(q)
+        return _uniq_cands("a", 8)
+
+    with patch("src.gateway.image_search.search_image", side_effect=fake_search), \
+         patch("src.pipeline.nodes.fetch_image_bytes", new=_fetch_big_distinct):
+        out = await node_entity_bind({"task_id": tid})
+    assert calls == ["空气炸锅 测评 高清"]
+    assert out["searched_images"] == 8
+    assert out["ref_rescoped"] == 0
+
+
+@pytest.mark.asyncio
+async def test_entity_bind_rescue_dedupes_across_rounds():
+    """补搜仍走同一 seen 排重：补搜返回的 URL/内容与首轮重复时不重复收进。"""
+    tid = await _make_task(mode="single", query="空气炸锅 测评")
+    same = _uniq_cands("a", 3)          # 首轮 3 张
+    plan = {"空气炸锅 测评 高清": same,
+            "空气炸锅 测评 实拍": same + _uniq_cands("b", 4)}  # 3 张重复 + 4 张新图
+    calls = []
+
+    async def fake_search(q, count=0):
+        calls.append(q)
+        return plan.get(q, [])
+
+    with patch("src.gateway.image_search.search_image", side_effect=fake_search), \
+         patch("src.pipeline.nodes.fetch_image_bytes", new=_fetch_big_distinct):
+        out = await node_entity_bind({"task_id": tid})
+    assert out["searched_images"] == 7       # 3 + 4，重复 3 张被排重
+    assert out["ref_rescoped"] == 1
+    assert out["ref_dupes"] == 3
+
+
+@pytest.mark.asyncio
+async def test_download_quality_refs_concurrent_dedupe():
+    """并发下载的排重正确性：URL 重复 + 不同 URL 同内容 md5 都被判重；
+    min_keep 保底仍生效（达标不足时用次优补齐）。"""
+    from src.pipeline.nodes import _download_quality_refs
+    big = _png_bytes(1200, 1600, (10, 30, 30))
+    cands = [
+        {"title": "1", "image_url": "http://img.test/d1.png", "engine": "bing"},
+        {"title": "1d", "image_url": "http://img.test/d1.png", "engine": "bing"},  # URL 重复
+        {"title": "2", "image_url": "http://img.test/d2.png", "engine": "bing"},   # 同内容 md5
+        {"title": "3", "image_url": "http://img.test/d3.png", "engine": "bing"},   # 小图
+    ]
+
+    async def fetch(url, timeout=60):
+        return (big if not url.endswith("d3.png") else _SMALL), "image/png"
+
+    with patch("src.pipeline.nodes.fetch_image_bytes", new=fetch), \
+         patch("src.pipeline.nodes._persist_image",
+               side_effect=lambda tid_, i, tag, data, ct: f"/static/generated/r{i}.png"):
+        refs, filtered, dupes = await _download_quality_refs(
+            "t", cands, 1, "x", min_keep=1)
+    assert dupes == 2          # 1 次 URL 级 + 1 次内容 md5 级
+    assert len(refs) == 1      # 仅 1 张 distinct 达标图
+    assert refs[0]["url"].startswith("/static/generated/")
+    assert filtered == 1       # 小图被质量过滤

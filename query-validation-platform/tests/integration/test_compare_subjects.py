@@ -22,7 +22,7 @@ def _img(url):
     return {"title": "t", "image_url": url, "source": "s", "engine": "bing"}
 
 
-async def _fake_fetch(url):
+async def _fake_fetch(url, timeout=60):
     return b"\x89PNG fake", "image/png"
 
 
@@ -54,18 +54,18 @@ async def test_compare_splits_subjects_and_searches_separately():
                side_effect=lambda tid_, i, tag, data, ct: f"/static/generated/ref{i}.png"):
         out = await node_entity_bind({"task_id": tid})
 
-    assert out["searched_images"] == 20
+    assert out["searched_images"] == 24
     assert out["subjects"] == ["小米17 Pro", "荣耀600 Pro"]
     # 搜索词带「高清」提质量（2026-08-26 参考图质量改进）；假图字节非法 → 每组
     # 无达标图，以次优图补齐保底（2026-08-27 起：达标不设上限，保底最少 6 张/组）
-    assert calls == [("小米17 Pro 高清", 6), ("小米17 Pro 细节 侧面 高清", 4),
-                     ("荣耀600 Pro 高清", 6), ("荣耀600 Pro 细节 侧面 高清", 4)]
+    assert calls == [("小米17 Pro 高清", 20), ("小米17 Pro 细节 侧面 高清", 12),
+                     ("荣耀600 Pro 高清", 20), ("荣耀600 Pro 细节 侧面 高清", 12)]
     async with SessionLocal() as session:
         assets = (await session.execute(
             select(Asset).where(Asset.task_id == tid))).scalars().all()
     a_tags = [a.subject for a in assets if a.subject.startswith("A:")]
     b_tags = [a.subject for a in assets if a.subject.startswith("B:")]
-    assert len(a_tags) == 10 and len(b_tags) == 10
+    assert len(a_tags) == 12 and len(b_tags) == 12
     assert any("细节" in t for t in a_tags)
     assert any("细节" in t for t in b_tags)
 

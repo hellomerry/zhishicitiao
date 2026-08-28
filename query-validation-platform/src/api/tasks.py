@@ -686,9 +686,10 @@ class RefSearchIn(BaseModel):
 
 @router.post("/api/tasks/{task_id}/ref_search")
 async def ref_search(task_id: str, payload: RefSearchIn):
-    """人工重搜参考图：按给定搜索词搜 8 张，达最低分辨率的全保留（不设上限）
-    并排重（对任务现有参考图按 hash/URL 去重），作为 official 资产追加到任务
-    （不删旧图，旧图由用户手动删除）。归属隔离：非属主非 admin → 404。"""
+    """人工重搜参考图：按给定搜索词搜 20 张（2026-08-28 从 8 上调，bing
+    limit=30 实测能返回 30 张，候选池太小是实图不够的主因），达最低分辨率的
+    全保留（不设上限）并排重（对任务现有参考图按 hash/URL 去重），作为 official
+    资产追加到任务（不删旧图，旧图由用户手动删除）。归属隔离：非属主非 admin → 404。"""
     import hashlib
     from src.models.assets import Asset
     from src.gateway.image_search import search_image
@@ -708,7 +709,7 @@ async def ref_search(task_id: str, payload: RefSearchIn):
         check_owner(task, uid, role)
         q = (payload.query or "").strip() or f"{task.query} 高清"
         subject = (payload.subject or "").strip() or q
-        got = await search_image(q, count=8)
+        got = await search_image(q, count=20)
         start = ((await session.execute(
             select(func.max(Asset.page_index)).where(Asset.task_id == tid))
         ).scalar_one_or_none() or 0) + 1

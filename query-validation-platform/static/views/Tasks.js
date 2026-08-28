@@ -225,7 +225,7 @@ const TasksView = {
     async researchRefs() {
       const t = this.detailTask || {};
       const def = (t.query || '') + ' 高清';
-      const q = prompt('输入参考图搜索词（搜 8 张，达最低分辨率的全保留并自动排重）：', def);
+      const q = prompt('输入参考图搜索词（搜 20 张，达最低分辨率的全保留并自动排重）：', def);
       if (q === null || !q.trim()) return;
       const body = { actor: this.actorName, query: q.trim() };
       if (t.mode === 'compare') {
