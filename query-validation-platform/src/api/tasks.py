@@ -285,6 +285,7 @@ async def task_detail(task_id: str, actor: str = ""):
                 "priority": task.priority,
                 "status": task.status,
                 "image_provider": task.image_provider,  # 任务级生图模型（NULL=默认 gpt-image-2）
+                "gen_image_style": task.gen_image_style,  # 生图前自动判定的视觉风格（NULL=未判定）
                 "template_id": str(task.template_id) if task.template_id else None,
                 "created_at": task.created_at.isoformat() if task.created_at else None,
                 "created_by": str(task.created_by) if task.created_by else None,

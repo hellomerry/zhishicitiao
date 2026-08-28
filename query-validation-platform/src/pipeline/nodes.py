@@ -599,6 +599,8 @@ async def node_asset_gen(input_data: dict) -> dict:
             select(Task).where(Task.id == input_data["task_id"]))).scalar_one()
         mode = task.mode or "general"
         owner_id = task.created_by
+        query = task.query
+        gen_style = task.gen_image_style
         # 任务级生图模型（2026-08-28）：NULL=全局默认 gpt-image-2，
         # 用户在「待生图」确认环节手动选择其它模型时才写入（迁移 010）
         img_provider = task.image_provider
@@ -640,15 +642,41 @@ async def node_asset_gen(input_data: dict) -> dict:
         _take(pool_b)
         picks += [u for u in (common or []) if u not in picks]
         return picks or reference_urls
+    # 生图视觉风格自适应（2026-08-28，迁移 011）：正文生成后、生图前为任务判定
+    # 一次风格（用户风格库优先，空则内置 8 风格），6 张图共用；风格名落
+    # tasks.gen_image_style，描述词注入提示词替换固定风格句。判定失败不阻塞
+    # 出图（沿用模板默认风格句）。重跑/续跑时已判定的任务直接反查描述词。
+    style_desc = None
+    if not gen_style:
+        try:
+            from src.services.style_pick import pick_image_style
+            async with SessionLocal() as session:
+                draft_body = await _latest_draft_body(session, input_data["task_id"])
+            gen_style, style_desc = await pick_image_style(
+                query, draft_body,
+                llm_call=lambda p: call_with_failover(
+                    p, DEEPSEEK_MODEL, KIMI_MODEL, max_retries=1))
+            async with SessionLocal() as session:
+                t = (await session.execute(
+                    select(Task).where(Task.id == input_data["task_id"]))).scalar_one()
+                t.gen_image_style = gen_style
+                await session.commit()
+        except Exception:
+            traceback.print_exc()
+            gen_style = None
+    if gen_style and style_desc is None:
+        from src.services.style_pick import style_desc_for
+        style_desc = await style_desc_for(gen_style)
     # 自定义生图模板（提示词库启用的）替代系统模板；排版轮换仍由代码追加
     image_template = await get_effective_prompt("image_gen", mode, owner_id)
     no_text = settings.text_composite_enabled
     prompts = [get_image_prompt(mode, p.body or "", i, template=image_template,
-                                no_text=no_text)
+                                no_text=no_text, style_desc=style_desc)
                for i, p in enumerate(page_list, start=1)]
     while len(prompts) < 6:
         prompts.append(get_image_prompt(mode, "", len(prompts) + 1,
-                                        template=image_template, no_text=no_text))
+                                        template=image_template, no_text=no_text,
+                                        style_desc=style_desc))
     # 串行 + 间隔生成：避免测试账户限流，保证每张图有足够处理时间
     results = []
     seen_hashes = set()

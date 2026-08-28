@@ -24,6 +24,9 @@ class Task(Base):
     # 任务级生图模型（2026-08-28，迁移 010）：NULL=全局默认（gpt-image-2）；
     # 用户在「待生图」确认环节手动选择其它模型（gemini 等）时才生效
     image_provider = Column(Text)
+    # 任务级生图视觉风格（2026-08-28，迁移 011）：asset_gen 生图前按 query+正文
+    # 自动判定一次（用户风格库优先，空则内置 8 风格），6 张图共用；NULL=未判定
+    gen_image_style = Column(Text)
     # 回收站（2026-08-26）：status="trashed" 时记录原状态/时间/操作人，恢复用
     prev_status = Column(Text)
     trashed_at = Column(TIMESTAMP(timezone=True))

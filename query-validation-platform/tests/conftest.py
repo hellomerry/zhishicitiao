@@ -24,6 +24,7 @@ _ALL_TABLES = [
     "cross_checks", "risk_classifications", "review_sessions", "review_actions",
     "issues", "batches", "batch_members", "approvals", "publish_snapshots",
     "node_events", "prompt_templates", "activity_logs", "reject_marks",
+    "style_keywords",
 ]
 
 _MIGRATION_DIR = Path(__file__).resolve().parent.parent / "migrations"
@@ -86,10 +87,14 @@ FAKE_OCR = {"raw_text": "成立于1990年 测试文字", "cost_cny": 0.001, "mod
 
 @pytest.fixture(autouse=True)
 def mock_external_calls():
-    # 测试环境不真实调用生图/联网搜索/搜图/OCR API
+    # 测试环境不真实调用生图/联网搜索/搜图/OCR/LLM API
+    # （call_provider 兜底拦截：未显式 mock call_with_failover 的用例也不会
+    # 发出真实 LLM 请求——风格选择等新增 LLM 调用点会快速失败并走兜底逻辑）
     with patch("src.gateway.image_gen.generate_image", new=AsyncMock(return_value=FAKE_IMAGE)), \
          patch("src.gateway.web_search.web_search", return_value=FAKE_SEARCH), \
          patch("src.gateway.web_search.deepseek_verify", return_value=FAKE_VERIFY), \
          patch("src.gateway.image_search.search_image", return_value=FAKE_IMAGES), \
-         patch("src.gateway.ocr.ocr_image", new=AsyncMock(return_value=FAKE_OCR)):
+         patch("src.gateway.ocr.ocr_image", new=AsyncMock(return_value=FAKE_OCR)), \
+         patch("src.gateway.failover.call_provider",
+               new=AsyncMock(side_effect=RuntimeError("测试环境禁止真实 LLM 调用"))):
         yield

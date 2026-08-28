@@ -141,6 +141,8 @@ async def partial_regen(task_id) -> dict:
         owner_id = task.created_by
         # 任务级生图模型（2026-08-28，迁移 010）：定点重生成沿用任务所选模型
         img_provider = task.image_provider
+        # 任务已判定的生图视觉风格（迁移 011）：重生成沿用同一风格，图文气质一致
+        gen_style = task.gen_image_style
         marks = await get_open_marks(session, task_id)
         rounds, _ = await get_rejection_feedback(session, task_id)
     if not marks:
@@ -192,7 +194,9 @@ async def partial_regen(task_id) -> dict:
 
     async def _regen_images(input_data: dict) -> dict:
         from src.gateway.ocr import ocr_image
+        from src.services.style_pick import style_desc_for
         image_template = await get_effective_prompt("image_gen", mode, owner_id)
+        style_desc = await style_desc_for(gen_style)
         async with SessionLocal() as session:
             # 保留图的 hash 作为去重基准：重生成图不得与已认可的图重复（只算正式版）
             kept = (await session.execute(
@@ -220,7 +224,8 @@ async def partial_regen(task_id) -> dict:
         for p in images_to_regen:
             prompt = get_image_prompt(mode, body_map.get(p, ""), p,
                                       template=image_template,
-                                      no_text=settings.text_composite_enabled)
+                                      no_text=settings.text_composite_enabled,
+                                      style_desc=style_desc)
             fb = image_reasons.get(p, []) + page_reasons.get(p, [])
             if fb:
                 prompt += ("\n\n【审核意见】该页上一版本被人工审核驳回："

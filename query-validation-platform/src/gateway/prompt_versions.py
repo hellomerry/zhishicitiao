@@ -6,14 +6,18 @@
 # 2026-08-28 主体锚定条款：无参考图模式下「坚韧」被 gpt-image-2 与 Gemini 双双
 # 具象化成石缝发芽植物（同词条 A/B 对比实测跑题），故硬性要求主体直接描绘主题事物，
 # 风格词仅作光影色调氛围；用户生产提示词因总有实景参考图压主体而无此问题）
+# 固定风格句（2026-08-28 风格自适应）：任务选定视觉风格后，该句被所选风格的
+# 描述词替换（get_image_prompt 的 style_desc 参数）；改文案必须三处同步。
+FIXED_IMAGE_STYLE_SENTENCE = "坚韧治愈风、高清、极简高级，背景不太白也不太暗；"
 _SHARED_IMAGE_STYLE = (
     "竖版3:4图文卡片，一级/二级标题与正文字号对应（至关重要）。"
     "图片与正文内容强相关、具有信息增益：不是简单重复文字，而是对文案的提炼和可视化表达。"
     "主体清晰不被遮挡、展现完整主体不裁剪关键特征。"
     "画面主体必须直接描绘本页文案所讲的事物本身（例如文案讲冰牛奶饮品，"
-    "画面就必须出现牛奶饮品杯），「坚韧治愈」仅作光影色调氛围，"
+    "画面就必须出现牛奶饮品杯），所选风格词仅作光影色调氛围，"
     "严禁把风格词具象化成植物、发芽、石缝、山峰等与主题无关的象征隐喻物。"
-    "坚韧治愈风、高清、极简高级，背景不太白也不太暗；全套图片风格与封面保持一致。"
+    + FIXED_IMAGE_STYLE_SENTENCE +
+    "全套图片风格与封面保持一致。"
     "所有文字必须使用标准可读中文黑体，禁止艺术化变形、阴影、描边、透视扭曲，"
     "正文统一基线对齐、可印刷级清晰；图中文字不超过100字，不出现字号过小的文字。"
     "图中所有汉字必须是中国大陆规范简体字形，严禁日文新字体（如実・対・変・単・図・芸）、"
@@ -64,9 +68,10 @@ _SHARED_IMAGE_STYLE_NOTEXT = (
     "竖版3:4图文卡片插画。图片与主题强相关、具有信息增益：对内容的提炼和可视化表达。"
     "主体清晰不被遮挡、展现完整主体不裁剪关键特征。"
     "画面主体必须直接描绘本页文案所讲的事物本身（例如文案讲冰牛奶饮品，"
-    "画面就必须出现牛奶饮品杯），「坚韧治愈」仅作光影色调氛围，"
+    "画面就必须出现牛奶饮品杯），所选风格词仅作光影色调氛围，"
     "严禁把风格词具象化成植物、发芽、石缝、山峰等与主题无关的象征隐喻物。"
-    "坚韧治愈风、高清、极简高级，背景不太白也不太暗；全套图片风格保持一致。"
+    + FIXED_IMAGE_STYLE_SENTENCE +
+    "全套图片风格保持一致。"
     "【绝对禁止】画面中不要出现任何文字：汉字、字母、数字、标点、招牌字、标签字、"
     "屏幕字一律不要（文字将由后期程序精确合成）；不出现人脸、书籍等元素。"
     "图片元素不与前页重复。"
@@ -102,8 +107,18 @@ def get_draft_prompt(mode: str) -> str:
     return DRAFT_PROMPTS.get(mode, DRAFT_PROMPTS["general"])
 
 
+def _apply_style_desc(prompt: str, style_desc: str = None) -> str:
+    """风格自适应注入（2026-08-28，迁移 011）：任务已选定视觉风格时，把模板里的
+    固定风格句替换为该风格的描述词；模板不含固定句（自定义模板）则不强行注入。"""
+    desc = (style_desc or "").strip()
+    if desc and FIXED_IMAGE_STYLE_SENTENCE in prompt:
+        prompt = prompt.replace(FIXED_IMAGE_STYLE_SENTENCE, desc.rstrip("；;") + "；")
+    return prompt
+
+
 def get_image_prompt(mode: str, page_body: str, page_index: int = None,
-                     template: str = None, no_text: bool = False) -> str:
+                     template: str = None, no_text: bool = False,
+                     style_desc: str = None) -> str:
     if no_text:
         # 文字后期合成模式：AI 只画无字背景并预留文字区（固定内置模板，
         # 自定义模板都含文字要求、与此模式冲突）
@@ -111,14 +126,14 @@ def get_image_prompt(mode: str, page_body: str, page_index: int = None,
                   + _SHARED_IMAGE_STYLE_NOTEXT)
         if page_index:
             prompt += _PAGE_LAYOUTS_NOTEXT[(page_index - 1) % len(_PAGE_LAYOUTS_NOTEXT)]
-        return prompt
+        return _apply_style_desc(prompt, style_desc)
     # template：用户自定义生图提示词（替代系统模板），排版轮换仍由代码追加
     template = template or IMAGE_PROMPTS.get(mode, IMAGE_PROMPTS["general"])
     prompt = template.replace("{page_body}", page_body)
     if page_index:
         # 追加本页专属排版指令，让 6 页构图错开（风格词不变，只变布局）
         prompt += _PAGE_LAYOUTS[(page_index - 1) % len(_PAGE_LAYOUTS)]
-    return prompt
+    return _apply_style_desc(prompt, style_desc)
 
 
 # 分页文案：由 LLM 把整篇正文改写成 6 页图上文案（替代旧的机械切割，2026-08-20）
