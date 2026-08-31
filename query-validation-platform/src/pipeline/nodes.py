@@ -432,7 +432,10 @@ async def node_draft_gen(input_data: dict) -> dict:
         mode = task.mode or "general"
         owner_id = task.created_by
     template = await get_effective_prompt("draft_gen", mode, owner_id)
-    prompt = template + "\n\n" + query
+    # 标杆交付规范（迁移 015，借鉴 8003：真实成功案例提炼的标题/结构/口吻规律）
+    from src.services.bench_rule import get_bench_rule
+    bench = await get_bench_rule(mode)
+    prompt = template + ("\n\n" + bench if bench else "") + "\n\n" + query
     prompt_version = f"draft_{mode}_v1"
     # 驳回重生成：审核意见与系统提示词、任务 query 一起作为处理依据，
     # 要求模型逐条修正，避免同类问题遗留到下一轮审核。
@@ -534,8 +537,11 @@ async def node_page_split(input_data: dict) -> dict:
     from src.gateway.prompt_versions import get_effective_prompt
     async with SessionLocal() as session:
         text = await _latest_draft_body(session, input_data["task_id"])
-        owner_id = (await session.execute(
-            select(Task.created_by).where(Task.id == input_data["task_id"]))).scalar()
+        row = (await session.execute(
+            select(Task.created_by, Task.mode)
+            .where(Task.id == input_data["task_id"]))).first()
+        owner_id = row[0] if row else None
+        mode = (row[1] or "general") if row else "general"
     # 首选 LLM 按页写图上文案；解析失败/调用失败退回机械切割（保证节点不卡死）
     pages, model_version, cost = None, "mechanical", 0.0
     try:
@@ -543,6 +549,11 @@ async def node_page_split(input_data: dict) -> dict:
         template = await get_effective_prompt("page_split", None, owner_id)
         llm_prompt = (template.replace("{body}", text) if "{body}" in template
                       else template + "\n\n" + text)
+        # 标杆交付规范（迁移 015）：图上文案规律注入分页写作
+        from src.services.bench_rule import get_bench_rule
+        bench = await get_bench_rule(mode)
+        if bench:
+            llm_prompt = bench + "\n\n" + llm_prompt
         result = await call_with_failover(llm_prompt, DEEPSEEK_MODEL, KIMI_MODEL)
         raw = result["text"].strip()
         if raw.startswith("```"):
@@ -686,6 +697,9 @@ async def node_asset_gen(input_data: dict) -> dict:
         owner_id = task.created_by
         query = task.query
         gen_style = task.gen_image_style
+        # 风格描述快照（迁移 015）：已选定任务的描述词冻结在任务上，风格库
+        # 后续编辑/删除不改变本任务（含定点重生成）的视觉风格
+        style_desc_snapshot = task.gen_image_style_desc
         # 任务级生图模型（2026-08-28）：NULL=全局默认 gpt-image-2，
         # 用户在「待生图」确认环节手动选择其它模型时才写入（迁移 010）
         img_provider = task.image_provider
@@ -730,7 +744,8 @@ async def node_asset_gen(input_data: dict) -> dict:
     # 生图视觉风格自适应（2026-08-28，迁移 011）：正文生成后、生图前为任务判定
     # 一次风格（用户风格库优先，空则内置 8 风格），6 张图共用；风格名落
     # tasks.gen_image_style，描述词注入提示词替换固定风格句。判定失败不阻塞
-    # 出图（沿用模板默认风格句）。重跑/续跑时已判定的任务直接反查描述词。
+    # 出图（沿用模板默认风格句）。重跑/续跑时已判定的任务优先用快照描述词
+    # （迁移 015），无快照（015 前老任务）再按名反查库中现行描述。
     style_desc = None
     if not gen_style:
         try:
@@ -745,10 +760,13 @@ async def node_asset_gen(input_data: dict) -> dict:
                 t = (await session.execute(
                     select(Task).where(Task.id == input_data["task_id"]))).scalar_one()
                 t.gen_image_style = gen_style
+                t.gen_image_style_desc = style_desc  # 快照（迁移 015）
                 await session.commit()
         except Exception:
             traceback.print_exc()
             gen_style = None
+    if gen_style and style_desc is None:
+        style_desc = style_desc_snapshot
     if gen_style and style_desc is None:
         from src.services.style_pick import style_desc_for
         style_desc = await style_desc_for(gen_style, owner_id)

@@ -143,6 +143,8 @@ async def partial_regen(task_id) -> dict:
         img_provider = task.image_provider
         # 任务已判定的生图视觉风格（迁移 011）：重生成沿用同一风格，图文气质一致
         gen_style = task.gen_image_style
+        # 风格描述快照（迁移 015）：冻结在任务上的描述词优先于库中现行描述
+        style_desc_snap = task.gen_image_style_desc
         marks = await get_open_marks(session, task_id)
         rounds, _ = await get_rejection_feedback(session, task_id)
     if not marks:
@@ -196,7 +198,7 @@ async def partial_regen(task_id) -> dict:
         from src.gateway.ocr import ocr_image
         from src.services.style_pick import style_desc_for
         image_template = await get_effective_prompt("image_gen", mode, owner_id)
-        style_desc = await style_desc_for(gen_style, owner_id)
+        style_desc = style_desc_snap or await style_desc_for(gen_style, owner_id)
         # 每页画面主体提取（与 node_asset_gen 对齐，2026-08-31）：定点重生成原来
         # 不传 page_subject，重出的图沿用通用锚定句，图文不对应问题修不到。
         # 在文案重写之后执行，读到的是重写后的新文案。失败回退 None 不阻塞。

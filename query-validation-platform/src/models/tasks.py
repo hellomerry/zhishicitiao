@@ -27,6 +27,9 @@ class Task(Base):
     # 任务级生图视觉风格（2026-08-28，迁移 011）：asset_gen 生图前按 query+正文
     # 自动判定一次（用户风格库优先，空则内置 8 风格），6 张图共用；NULL=未判定
     gen_image_style = Column(Text)
+    # 风格描述快照（2026-08-31，迁移 015）：选定风格时冻结描述词在任务上，
+    # 风格库后续编辑/删除不影响本任务重出图；NULL=未快照（015 前老任务按名反查）
+    gen_image_style_desc = Column(Text)
     # 分页画面主体（2026-08-31，迁移 014）：asset_gen 从 6 页分页文案 LLM 提取
     # 的每页画面主体（JSON 数组），注入生图提示词用；NULL=未提取/提取失败
     page_subjects = Column(JSONB)
