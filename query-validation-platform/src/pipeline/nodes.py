@@ -512,6 +512,22 @@ def _split_pages(text: str, n: int = 6) -> list:
     return pages[:n]
 
 
+# 分页文案占位词黑名单（2026-08-31 真实 bug：LLM 把结构名当文案输出，
+# 封面被渲染成「标题」两个大字）：整行恰为这些词的视为占位行剥除
+_PLACEHOLDER_LINE_WORDS = {"标题", "副标题", "正文", "小标题", "大标题",
+                           "封面", "封面标题", "内容", "结尾"}
+
+
+def _strip_placeholder_lines(pages: list) -> list:
+    """剥除分页文案里的占位词整行（如单独一行的「标题」），保留真实文案。"""
+    cleaned = []
+    for p in pages:
+        lines = [ln for ln in str(p).splitlines()
+                 if ln.strip().strip("：:") not in _PLACEHOLDER_LINE_WORDS]
+        cleaned.append("\n".join(lines).strip())
+    return cleaned
+
+
 async def node_page_split(input_data: dict) -> dict:
     from src.models.drafts import PageCopy
     from src.models.tasks import Task
@@ -534,9 +550,13 @@ async def node_page_split(input_data: dict) -> dict:
         arr = _json.loads(raw[raw.index("["):raw.rindex("]") + 1])
         arr = [str(p).strip() for p in arr if str(p).strip()]
         if len(arr) >= 6:
-            pages = arr[:6]
-            model_version = result["model_version"]
-            cost = result["cost_cny"]
+            pages = _strip_placeholder_lines(arr[:6])
+            # 剥完占位词有页变空 → 视为解析失败，回退机械切割
+            if all(pages):
+                model_version = result["model_version"]
+                cost = result["cost_cny"]
+            else:
+                pages = None
     except Exception:
         traceback.print_exc()
     if pages is None:
