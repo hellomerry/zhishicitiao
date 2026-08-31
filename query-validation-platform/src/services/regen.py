@@ -197,6 +197,27 @@ async def partial_regen(task_id) -> dict:
         from src.services.style_pick import style_desc_for
         image_template = await get_effective_prompt("image_gen", mode, owner_id)
         style_desc = await style_desc_for(gen_style, owner_id)
+        # 每页画面主体提取（与 node_asset_gen 对齐，2026-08-31）：定点重生成原来
+        # 不传 page_subject，重出的图沿用通用锚定句，图文不对应问题修不到。
+        # 在文案重写之后执行，读到的是重写后的新文案。失败回退 None 不阻塞。
+        page_subjects = None
+        try:
+            from src.services.page_subject import extract_page_subjects
+            async with SessionLocal() as session:
+                all_pages = (await session.execute(
+                    select(PageCopy).where(PageCopy.task_id == task_id)
+                    .order_by(PageCopy.page_index))).scalars().all()
+            bodies = [(p.body or "") for p in all_pages][:6]
+            while len(bodies) < 6:
+                bodies.append("")
+            page_subjects = await extract_page_subjects(
+                bodies,
+                llm_call=lambda pr: call_with_failover(
+                    pr, DEEPSEEK_MODEL, KIMI_MODEL, max_retries=1))
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            page_subjects = None
         async with SessionLocal() as session:
             # 保留图的 hash 作为去重基准：重生成图不得与已认可的图重复（只算正式版）
             kept = (await session.execute(
@@ -225,7 +246,10 @@ async def partial_regen(task_id) -> dict:
             prompt = get_image_prompt(mode, body_map.get(p, ""), p,
                                       template=image_template,
                                       no_text=settings.text_composite_enabled,
-                                      style_desc=style_desc)
+                                      style_desc=style_desc,
+                                      page_subject=(page_subjects[p - 1]
+                                                    if page_subjects and p <= 6
+                                                    else None))
             fb = image_reasons.get(p, []) + page_reasons.get(p, [])
             if fb:
                 prompt += ("\n\n【审核意见】该页上一版本被人工审核驳回："
