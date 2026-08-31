@@ -155,7 +155,8 @@ async def queue(role: str):
         stmt = (select(ReviewSession, Task, RiskClassification)
                 .join(Task, Task.id == ReviewSession.task_id)
                 .outerjoin(RiskClassification, RiskClassification.task_id == ReviewSession.task_id)
-                .where(ReviewSession.finished_at.is_(None)))
+                .where(ReviewSession.finished_at.is_(None),
+                       Task.status != "trashed"))  # 回收站任务不出现在待审队列
         if role != "admin":
             stmt = stmt.where(ReviewSession.role == role)
         rows = (await session.execute(stmt)).all()
