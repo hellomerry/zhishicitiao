@@ -1,4 +1,6 @@
 from src.gateway.prompt_versions import (FIXED_IMAGE_STYLE_SENTENCE,
+                                         SUBJECT_ANCHOR_SENTENCE,
+                                         _TEXT_PRESENTATIONS,
                                          get_draft_prompt, get_image_prompt)
 
 
@@ -57,3 +59,63 @@ def test_image_prompt_style_desc_custom_template_with_fixed_sentence():
     p = get_image_prompt("general", "文案", template=tpl, style_desc="手绘线稿、水彩淡彩")
     assert "手绘线稿、水彩淡彩；" in p
     assert FIXED_IMAGE_STYLE_SENTENCE not in p
+
+
+# ---- 动态主体锚定（2026-08-31）：page_subject 替换锚定条款里的通用例子句 ----
+
+def test_image_prompt_page_subject_replaces_anchor():
+    p = get_image_prompt("general", "文案", page_subject="加冰块的高脚杯牛奶")
+    assert "本页画面主体必须是：加冰块的高脚杯牛奶，占据画面视觉中心" in p
+    assert SUBJECT_ANCHOR_SENTENCE not in p
+    # 风格词仅作氛围的约束保留
+    assert "仅作光影色调氛围" in p
+
+
+def test_image_prompt_page_subject_notext_mode():
+    p = get_image_prompt("general", "文案", no_text=True,
+                         page_subject="两只碰杯的手特写")
+    assert "本页画面主体必须是：两只碰杯的手特写，占据画面视觉中心" in p
+    assert SUBJECT_ANCHOR_SENTENCE not in p
+
+
+def test_image_prompt_page_subject_custom_template_with_anchor():
+    # 自定义模板含同样锚定句时也应替换
+    tpl = "自定义前缀。" + SUBJECT_ANCHOR_SENTENCE + "后缀 {page_body}"
+    p = get_image_prompt("general", "文案", template=tpl, page_subject="一杯热拿铁")
+    assert "本页画面主体必须是：一杯热拿铁" in p
+    assert SUBJECT_ANCHOR_SENTENCE not in p
+
+
+def test_image_prompt_page_subject_none_keeps_anchor():
+    p = get_image_prompt("general", "文案", page_subject=None)
+    assert SUBJECT_ANCHOR_SENTENCE in p
+    p2 = get_image_prompt("general", "文案", no_text=True, page_subject="")
+    assert SUBJECT_ANCHOR_SENTENCE in p2
+
+
+def test_image_prompt_page_subject_custom_template_without_anchor():
+    # 自定义模板不含锚定句时不强行注入
+    p = get_image_prompt("general", "文案", template="自定义模板 {page_body}",
+                         page_subject="一杯热拿铁")
+    assert "一杯热拿铁" not in p
+
+
+# ---- 文字呈现形式分页轮换（2026-08-31）：有字版按页注入，无字版不注入 ----
+
+def test_image_prompt_text_presentation_rotates_per_page():
+    for i in range(1, 7):
+        p = get_image_prompt("general", "文案", page_index=i)
+        assert _TEXT_PRESENTATIONS[i - 1] in p
+    # 页码取模：第 7 页回到第 1 条
+    assert _TEXT_PRESENTATIONS[0] in get_image_prompt("general", "文案", page_index=7)
+
+
+def test_image_prompt_text_presentation_not_in_notext_mode():
+    p = get_image_prompt("general", "文案", page_index=1, no_text=True)
+    assert "文字呈现形式" not in p
+
+
+def test_image_prompt_dark_box_limit_present():
+    # 全局约束：深色底文字框全套最多 1 次
+    p = get_image_prompt("general", "文案")
+    assert "深色底文字框最多出现1次" in p

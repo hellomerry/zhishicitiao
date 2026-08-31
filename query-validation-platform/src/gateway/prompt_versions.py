@@ -9,17 +9,26 @@
 # 固定风格句（2026-08-28 风格自适应）：任务选定视觉风格后，该句被所选风格的
 # 描述词替换（get_image_prompt 的 style_desc 参数）；改文案必须三处同步。
 FIXED_IMAGE_STYLE_SENTENCE = "坚韧治愈风、高清、极简高级，背景不太白也不太暗；"
+# 主体锚定条款（2026-08-31 动态主体注入）：无参考图模式下让生图模型自己从抽象
+# 文案解读主体会漂移（实测冰牛奶做法封面被画成石头堆），故 asset_gen 每页生图前
+# 先用 LLM 从分页文案提取具体画面主体，get_image_prompt(page_subject=...) 把本句
+# 替换为动态主体句；自定义模板含同样锚定句时也会被替换。改文案必须两处同步
+# （_SHARED_IMAGE_STYLE / _SHARED_IMAGE_STYLE_NOTEXT 均引用本常量）。
+SUBJECT_ANCHOR_SENTENCE = (
+    "画面主体必须直接描绘本页文案所讲的事物本身（例如文案讲冰牛奶饮品，"
+    "画面就必须出现牛奶饮品杯），所选风格词仅作光影色调氛围，"
+    "严禁把风格词具象化成植物、发芽、石缝、山峰等与主题无关的象征隐喻物。")
 _SHARED_IMAGE_STYLE = (
     "竖版3:4图文卡片，一级/二级标题与正文字号对应（至关重要）。"
     "图片与正文内容强相关、具有信息增益：不是简单重复文字，而是对文案的提炼和可视化表达。"
     "主体清晰不被遮挡、展现完整主体不裁剪关键特征。"
-    "画面主体必须直接描绘本页文案所讲的事物本身（例如文案讲冰牛奶饮品，"
-    "画面就必须出现牛奶饮品杯），所选风格词仅作光影色调氛围，"
-    "严禁把风格词具象化成植物、发芽、石缝、山峰等与主题无关的象征隐喻物。"
+    + SUBJECT_ANCHOR_SENTENCE
     + FIXED_IMAGE_STYLE_SENTENCE +
     "全套图片风格与封面保持一致。"
     "所有文字必须使用标准可读中文黑体，禁止艺术化变形、阴影、描边、透视扭曲，"
     "正文统一基线对齐、可印刷级清晰；图中文字不超过100字，不出现字号过小的文字。"
+    "禁止把每页文字都装进深色矩形底框；全套6页中深色底文字框最多出现1次，"
+    "优先把文字直接排版在画面留白处。"
     "图中所有汉字必须是中国大陆规范简体字形，严禁日文新字体（如実・対・変・単・図・芸）、"
     "繁体字、异体字、自造字，严禁生成不存在的伪汉字或乱码字符；"
     "把图中文字当作需要逐字精确复制的排版内容，而不是装饰性视觉纹理："
@@ -47,6 +56,18 @@ _PAGE_LAYOUTS = [
     "本页是总结页：居中大字结论，下方最多两行小字，视觉收尾干净利落。",
 ]
 
+# 文字呈现形式分页轮换（2026-08-31 用户反馈「每页都是深色矩形框压字」）：
+# 提示词原来只约束字体、没约束文字载体形式，模型默认每页深色圆角矩形框。
+# 与 _PAGE_LAYOUTS 同步按页码追加（仅 no_text=False 的有字版），错开 6 页文字形式
+_TEXT_PRESENTATIONS = [
+    "本页文字呈现形式：标题与正文直接排版在纯色留白区域，不使用任何底框或底色块。",
+    "本页文字呈现形式：杂志式排版，大标题下方用一条细分隔线引出正文，全程无底色块。",
+    "本页文字呈现形式：关键短句用浅色（非深色）胶囊形圆角标签呈现，标签间留明显间距。",
+    "本页文字呈现形式：左侧约四分之一为竖排大标题区，其余文字在右侧留白区横向排版，无底框。",
+    "本页文字呈现形式：文字置于底部浅色（非深色）半透明横条上，横条通透、不遮挡画面主体。",
+    "本页文字呈现形式：居中无框大标题加充足留白，小字紧随其后，全页不出现任何底框。",
+]
+
 IMAGE_PROMPTS = {
     "general": "通用科普/教程配图，纯 AI 生成、无参考图。" + _SHARED_IMAGE_STYLE + "【本页必须出现在图中的文字，逐字准确呈现】：{page_body}",
     "single": "单品评测配图，将提供的参考实景图融入画面：去水印、去人物、实景图不重复、每页实景图不宜过多以免杂乱；不删减参考图上的文字，也不额外添加其他图片。" + _SHARED_IMAGE_STYLE + "【本页必须出现在图中的文字，逐字准确呈现】：{page_body}",
@@ -67,9 +88,7 @@ _MODE_PREFIX_NOTEXT = {
 _SHARED_IMAGE_STYLE_NOTEXT = (
     "竖版3:4图文卡片插画。图片与主题强相关、具有信息增益：对内容的提炼和可视化表达。"
     "主体清晰不被遮挡、展现完整主体不裁剪关键特征。"
-    "画面主体必须直接描绘本页文案所讲的事物本身（例如文案讲冰牛奶饮品，"
-    "画面就必须出现牛奶饮品杯），所选风格词仅作光影色调氛围，"
-    "严禁把风格词具象化成植物、发芽、石缝、山峰等与主题无关的象征隐喻物。"
+    + SUBJECT_ANCHOR_SENTENCE
     + FIXED_IMAGE_STYLE_SENTENCE +
     "全套图片风格保持一致。"
     "【绝对禁止】画面中不要出现任何文字：汉字、字母、数字、标点、招牌字、标签字、"
@@ -116,9 +135,23 @@ def _apply_style_desc(prompt: str, style_desc: str = None) -> str:
     return prompt
 
 
+def _apply_page_subject(prompt: str, page_subject: str = None) -> str:
+    """动态主体锚定（2026-08-31）：asset_gen 已从本页文案提取画面主体时，把
+    锚定条款里的通用例子句替换为该主体句；模板不含锚定句（如无主体约束的
+    自定义模板）则不强行注入。"""
+    subject = (page_subject or "").strip()
+    if subject and SUBJECT_ANCHOR_SENTENCE in prompt:
+        prompt = prompt.replace(
+            SUBJECT_ANCHOR_SENTENCE,
+            f"本页画面主体必须是：{subject}，占据画面视觉中心；"
+            f"所选风格词仅作光影色调氛围，"
+            f"严禁用与本页文案无关的象征隐喻物替代主体。")
+    return prompt
+
+
 def get_image_prompt(mode: str, page_body: str, page_index: int = None,
                      template: str = None, no_text: bool = False,
-                     style_desc: str = None) -> str:
+                     style_desc: str = None, page_subject: str = None) -> str:
     if no_text:
         # 文字后期合成模式：AI 只画无字背景并预留文字区（固定内置模板，
         # 自定义模板都含文字要求、与此模式冲突）
@@ -126,14 +159,17 @@ def get_image_prompt(mode: str, page_body: str, page_index: int = None,
                   + _SHARED_IMAGE_STYLE_NOTEXT)
         if page_index:
             prompt += _PAGE_LAYOUTS_NOTEXT[(page_index - 1) % len(_PAGE_LAYOUTS_NOTEXT)]
-        return _apply_style_desc(prompt, style_desc)
+        prompt = _apply_style_desc(prompt, style_desc)
+        return _apply_page_subject(prompt, page_subject)
     # template：用户自定义生图提示词（替代系统模板），排版轮换仍由代码追加
     template = template or IMAGE_PROMPTS.get(mode, IMAGE_PROMPTS["general"])
     prompt = template.replace("{page_body}", page_body)
     if page_index:
-        # 追加本页专属排版指令，让 6 页构图错开（风格词不变，只变布局）
+        # 追加本页专属排版指令 + 文字呈现形式，让 6 页构图与文字载体都错开
         prompt += _PAGE_LAYOUTS[(page_index - 1) % len(_PAGE_LAYOUTS)]
-    return _apply_style_desc(prompt, style_desc)
+        prompt += _TEXT_PRESENTATIONS[(page_index - 1) % len(_TEXT_PRESENTATIONS)]
+    prompt = _apply_style_desc(prompt, style_desc)
+    return _apply_page_subject(prompt, page_subject)
 
 
 # 分页文案：由 LLM 把整篇正文改写成 6 页图上文案（替代旧的机械切割，2026-08-20）
