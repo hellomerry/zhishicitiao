@@ -131,11 +131,16 @@ async def action(payload: ActionIn):
         # 无标记清理产物整体重生成，不再人工回任务中心点重试
         from src.services.regen import enqueue_regen
         auto = await enqueue_regen(tid)
-        await log_action(payload.reviewer_id, "auto_retry",
-                         "驳回自动提交重生成（"
-                         + (f"定点 {auto['mark_count']} 项标记，其余内容保留"
-                            if auto["mark_count"] else "整体重生成") + "）",
-                         task_id=tid)
+        if auto.get("kind") == "merged":
+            await log_action(payload.reviewer_id, "auto_retry",
+                             "驳回理由与标记已记录：任务正由另一操作（发起人修正/"
+                             "其他审核员驳回）重生成中，将一并处理", task_id=tid)
+        else:
+            await log_action(payload.reviewer_id, "auto_retry",
+                             "驳回自动提交重生成（"
+                             + (f"定点 {auto['mark_count']} 项标记，其余内容保留"
+                                if auto["mark_count"] else "整体重生成") + "）",
+                             task_id=tid)
     return {"ok": True, "action": payload.action_type, "auto_retry": auto}
 
 
@@ -165,6 +170,24 @@ async def queue(role: str):
             return bool(rs.locked_at and rs.last_heartbeat_at
                         and (now - rs.last_heartbeat_at).total_seconds() < 30)
 
+        # 重生成中的任务（2026-08-31 双方可见性）：发起人自助修正/审核员驳回
+        # 已提交、系统正在自动重跑的任务——审核员据此知道这些任务即将回到
+        # 待审，不会误以为任务消失，也不会重复操作。role=creator 为发起人标记。
+        from src.models.review import RejectMark
+        regen_map: dict[str, dict] = {}
+        for t, m in (await session.execute(
+                select(Task, RejectMark)
+                .join(RejectMark, RejectMark.task_id == Task.id)
+                .where(Task.status.in_(["draft", "processing"]),
+                       RejectMark.status == "open")
+                .order_by(Task.created_at))).all():
+            e = regen_map.setdefault(str(t.id), {
+                "task_id": str(t.id), "query": t.query, "status": t.status,
+                "marks": []})
+            e["marks"].append({"role": m.role, "item_type": m.item_type,
+                               "page_index": m.page_index})
+        regenerating = list(regen_map.values())
+
         if role == "admin":
             by_task: dict[str, dict] = {}
             for rs, t, rc in rows:
@@ -182,7 +205,7 @@ async def queue(role: str):
                 if _locked(rs):
                     entry["locked"] = True
                     entry["locked_by"] = names.get(str(rs.reviewer_id))
-            return {"sessions": list(by_task.values())}
+            return {"sessions": list(by_task.values()), "regenerating": regenerating}
 
         sessions = []
         for rs, t, rc in rows:
@@ -196,7 +219,7 @@ async def queue(role: str):
                 "locked": locked,
                 "locked_by": names.get(str(rs.reviewer_id)) if locked else None,
             })
-        return {"sessions": sessions}
+        return {"sessions": sessions, "regenerating": regenerating}
 
 
 @router.get("/api/review/task/{task_id}")

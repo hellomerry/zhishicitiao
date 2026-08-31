@@ -92,11 +92,18 @@ class TaskScheduler:
                 await bus.publish("task_enqueued", {"query": task.query}, task_id=tid)
 
     async def enqueue(self, task_id, query: str, priority: str = "normal",
-                      kind: str = "pipeline") -> None:
+                      kind: str = "pipeline") -> bool:
         tid = str(task_id)
+        # 按任务去重（2026-08-31 并发修复）：同一任务已在队列/在跑时不重复入队，
+        # 避免双方同时驳回/修正导致两个 worker 并发执行同一任务。
+        # 新标记已落库，在跑/在队的那一轮会一并处理（partial_regen 结束还有
+        # 补跑兜底），跳过是安全的。返回是否真正入队。
+        if self._meta.get(tid, {}).get("status") in ("queued", "processing"):
+            return False
         self._meta[tid] = {"query": query, "status": "queued", "kind": kind}
         self._put(task_id, priority)
         await bus.publish("task_enqueued", {"query": query}, task_id=tid)
+        return True
 
     def pause(self) -> None:
         """暂停取新任务（检修停机），已在跑的任务继续完成。"""
@@ -163,8 +170,14 @@ class TaskScheduler:
             await session.commit()
         if kind == "partial_regen":
             # 定点重生成：只重做被驳回标记的页文案/配图，其余产物保留
-            from src.services.regen import partial_regen
+            from src.services.regen import partial_regen, get_open_marks
             await partial_regen(task_id)
+            # 竞态兜底（2026-08-31）：重跑期间另一方（发起人/审核员）的标记
+            # 晚于本轮读取落库，补跑一轮把剩余 open 标记处理完再回审核
+            async with SessionLocal() as session:
+                leftover = await get_open_marks(session, task_id)
+            if leftover:
+                await partial_regen(task_id)
             await self._mark_status(task_id, "review")
         elif kind == "gen_resume":
             # 人工确认门放行：续跑全链（page_split 及之前节点幂等跳过）

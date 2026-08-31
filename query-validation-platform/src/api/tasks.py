@@ -141,6 +141,17 @@ async def list_tasks(status: str | None = None, mode: str | None = None,
             select(Task).where(*filters)
             .order_by(order_by, Task.created_at.desc())
             .limit(limit).offset(offset))).scalars().all()
+        # 各任务 open 驳回/修正标记数（2026-08-31 双方可见性）：发起人据此
+        # 区分「正常生产排队」与「审核驳回/自助修正正在自动重跑」
+        from src.models.review import RejectMark
+        mark_counts: dict = {}
+        if tasks:
+            for tid_, cnt in (await session.execute(
+                    select(RejectMark.task_id, func.count(RejectMark.id))
+                    .where(RejectMark.task_id.in_([t.id for t in tasks]),
+                           RejectMark.status == "open")
+                    .group_by(RejectMark.task_id))).all():
+                mark_counts[str(tid_)] = cnt
         items = []
         for t in tasks:
             current = (await session.execute(
@@ -156,6 +167,7 @@ async def list_tasks(status: str | None = None, mode: str | None = None,
                 "status": t.status,
                 "risk_level": risk.level if risk else None,
                 "current_node": current,
+                "open_marks": mark_counts.get(str(t.id), 0),
                 "created_at": t.created_at.isoformat() if t.created_at else None,
             })
         return {"total": total, "items": items}
@@ -450,8 +462,14 @@ async def fix_task(task_id: str, payload: FixIn):
     items = "、".join(
         f"{'文案' if m.item_type == 'page' else '配图'}P{m.page_index}"
         for m in payload.marks)
-    await log_action(payload.actor, "fix_task",
-                     f"创建者自助修正（{items}）：{query[:50]}", task_id=tid)
+    if auto.get("kind") == "merged":
+        await log_action(payload.actor, "fix_task",
+                         f"创建者自助修正（{items}）已记录：任务正由另一操作"
+                         f"（审核驳回等）重生成中，将一并处理：{query[:50]}",
+                         task_id=tid)
+    else:
+        await log_action(payload.actor, "fix_task",
+                         f"创建者自助修正（{items}）：{query[:50]}", task_id=tid)
     return {"ok": True, "task_id": str(tid), "kind": auto["kind"],
             "mark_count": auto["mark_count"]}
 

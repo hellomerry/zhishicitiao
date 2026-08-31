@@ -2,7 +2,7 @@
 const ReviewView = {
   data() {
     return {
-      queue: [], error: '', msg: '',
+      queue: [], regenerating: [], error: '', msg: '',
       current: null,        // /api/review/task/{id} 结果
       currentId: null,      // 当前选中任务 id（/api/review/task 的 task 不含 id）
       detail: null,         // /api/tasks/{id}/detail（三方进度/节点）
@@ -84,8 +84,21 @@ const ReviewView = {
     },
     async loadQueue() {
       if (!this.isReviewer) return;
-      try { this.queue = (await api.get(`/api/review/queue/${this.role}`)).sessions || []; this.error = ''; }
+      try {
+        const r = (await api.get(`/api/review/queue/${this.role}`));
+        this.queue = r.sessions || [];
+        this.regenerating = r.regenerating || [];
+        this.error = '';
+      }
       catch (e) { this.error = e.message; }
+    },
+    regenSummary(t) {
+      const c = (t.marks || []).filter(m => m.role === 'creator').length;
+      const r = (t.marks || []).length - c;
+      const parts = [];
+      if (c) parts.push(`发起人修正 ${c} 项`);
+      if (r) parts.push(`审核员驳回 ${r} 项`);
+      return parts.join(' · ') || '重生成中';
     },
     async select(t) {
       this.releaseTimers();
@@ -129,14 +142,16 @@ const ReviewView = {
       }
       this.acting = true; this.error = '';
       try {
-        await api.post('/api/review/action', {
+        const resp = await api.post('/api/review/action', {
           task_id: this.currentId, role: this.actRole, reviewer_id: this.user.name,
           action_type: actionType, reason: actionType === 'reject' ? this.rejectReason.trim() : '',
           marks: actionType === 'reject'
             ? this.marksList.map(m => ({ item_type: m.item_type, page_index: m.page_index, reason: m.reason.trim() }))
             : [],
         });
+        const merged = resp && resp.auto_retry && resp.auto_retry.kind === 'merged';
         this.msg = actionType === 'approve' ? '已通过'
+          : merged ? '已记录：该任务正在重生成中（另一方刚提交了修正/驳回），您的意见将一并处理'
           : (this.marksList.length ? `已驳回并自动提交修正（定点重生成 ${this.marksList.length} 项，其余内容保留）` : '已驳回并自动提交修正（整体重生成）');
         this.showReject = false; this.rejectReason = ''; this.marks = {};
         this.releaseTimers();
@@ -179,6 +194,17 @@ const ReviewView = {
               <span v-if="riskTag(t.risk_level)" class="tag" :class="riskTag(t.risk_level).cls">风险：{{ riskTag(t.risk_level).label }}</span>
               <span v-if="isAdmin && t.open_roles" class="tag tag-gray">待审：{{ t.open_roles.join('/') }}</span>
               <span v-if="t.locked" class="tag tag-yellow">🔒 {{ t.locked_by }} 审核中</span>
+            </div>
+          </div>
+          <div v-if="regenerating.length" style="margin-top:10px;border-top:1px solid var(--border,#e5e5e5);padding-top:8px">
+            <h3 style="font-size:14px;margin:0 0 6px">🔄 重生成中（{{ regenerating.length }}）</h3>
+            <div class="muted" style="font-size:12px;margin-bottom:6px">以下任务的修正/驳回已提交，系统正在自动重跑，完成后自动回到待审队列，无需重复操作</div>
+            <div v-for="t in regenerating" :key="t.task_id" class="queue-item" style="opacity:.75;cursor:default">
+              <div class="q">{{ t.query }}</div>
+              <div>
+                <span class="tag tag-yellow">{{ regenSummary(t) }}</span>
+                <span class="tag tag-gray">自动重跑中</span>
+              </div>
             </div>
           </div>
         </div>

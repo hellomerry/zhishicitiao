@@ -78,23 +78,39 @@ async def enqueue_regen(task_id) -> dict:
 
     有 open 定点标记 → partial_regen（只重做标记项，其余已认可内容保留）；
     无标记 → 清理上一轮全部内容产物后全链重跑（驳回理由注入重新生产）。
-    返回 {"kind", "mark_count"}。
+
+    并发互斥（2026-08-31 发起人/审核员同时操作竞态修复）：状态翻转是原子的，
+    只有能把状态从审核态（review/approved/rejected）翻成 draft 的一方获得
+    重跑权；翻转失败说明另一方的驳回/修正已抢先提交或在跑——本次操作合并
+    到那一轮（双方标记/理由均已落库，一轮重跑一并处理），返回
+    {"kind": "merged"}，不重复入队（调度器按任务去重双保险）。
+
+    返回 {"kind", "mark_count"}；kind ∈ pipeline / partial_regen / merged。
     """
     from src.db.session import SessionLocal
     from src.models.tasks import Task
     from src.stream.scheduler import scheduler
     async with SessionLocal() as session:
+        flipped = (await session.execute(
+            update(Task).where(
+                Task.id == task_id,
+                Task.status.in_(["review", "approved", "rejected"]))
+            .values(status="draft").returning(Task.id))).scalars().first()
+        if not flipped:
+            await session.rollback()
+            return {"kind": "merged", "mark_count": 0}
         task = (await session.execute(
             select(Task).where(Task.id == task_id))).scalar_one()
         mark_count = len(await get_open_marks(session, task_id))
         if not mark_count:
             await clear_generated_content(session, task_id)
-        task.status = "draft"
         query = task.query
         priority = task.priority or "normal"
         await session.commit()
     kind = "partial_regen" if mark_count else "pipeline"
-    await scheduler.enqueue(task_id, query, priority=priority, kind=kind)
+    enqueued = await scheduler.enqueue(task_id, query, priority=priority, kind=kind)
+    if not enqueued:
+        return {"kind": "merged", "mark_count": mark_count}
     return {"kind": kind, "mark_count": mark_count}
 
 

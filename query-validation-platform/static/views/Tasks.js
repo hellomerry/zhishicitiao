@@ -467,7 +467,7 @@ const TasksView = {
             <td @click.stop><input v-if="trashableRow(t)" type="checkbox" style="width:auto" v-model="selected[t.id]"></td>
             <td class="q-cell">{{ t.query }}</td>
             <td><span class="tag tag-blue">{{ modeLabel(t.mode) }}</span></td>
-            <td><span class="tag" :class="statusTag(t.status).cls">{{ statusTag(t.status).label }}</span></td>
+            <td><span class="tag" :class="statusTag(t.status).cls">{{ statusTag(t.status).label }}</span><span v-if="t.open_marks && ['draft','processing'].includes(t.status)" class="tag tag-yellow" :title="'审核驳回/自助修正已提交，系统正在自动重跑 '+t.open_marks+' 项标记，完成后自动回审核'">🔄 修正中×{{ t.open_marks }}</span></td>
             <td><span v-if="riskTag(t.risk_level)" class="tag" :class="riskTag(t.risk_level).cls">{{ riskTag(t.risk_level).label }}</span><span v-else class="muted">-</span></td>
             <td>{{ nodeLabel(t.current_node) }}</td>
             <td class="muted">{{ fmtTime(t.created_at) }}</td>
