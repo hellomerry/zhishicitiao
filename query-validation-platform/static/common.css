@@ -231,6 +231,13 @@ input, select, textarea { font-size: 15px; }
 .lb-img { display: block; margin: 0 auto; background: #14161c; user-select: none; object-fit: contain; }
 .lb-caption { flex: none; padding: 8px 14px; font-size: 14px; line-height: 1.6; color: #c8cdd6; background: rgba(255, 255, 255, .04); max-height: 20vh; overflow: auto; }
 .lb-caption p { margin: 0; white-space: pre-wrap; }
+/* 弹窗内驳回标记条（2026-08-31）：看大图细节时直接标问题+填说明 */
+.lb-markbar { flex: none; display: flex; align-items: center; gap: 10px; padding: 8px 14px; background: rgba(245, 158, 11, .08); border-top: 1px solid rgba(245, 158, 11, .25); }
+.lb-markbtn { flex: none; padding: 5px 14px; border: 1px solid #f59e0b; border-radius: 6px; background: transparent; color: #fbbf24; font-size: 13px; cursor: pointer; }
+.lb-markbtn:hover { background: rgba(245, 158, 11, .15); }
+.lb-markbtn.on { background: #f59e0b; color: #1a1a1a; }
+.lb-markreason { flex: 1; min-width: 0; padding: 6px 10px; border: 1px solid rgba(255, 255, 255, .2); border-radius: 6px; background: rgba(0, 0, 0, .35); color: #fff; font-size: 13px; }
+.lb-markreason:focus { outline: none; border-color: #f59e0b; }
 .img-grid img { cursor: zoom-in; }
 
 /* 放大预览翻页 */

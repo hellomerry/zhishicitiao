@@ -2,11 +2,13 @@
 // 多张切换：左右按钮、键盘 ←/→ 翻页、Esc 关闭
 // 缩放：＋/− 按钮、滚轮、键盘 +/-，1:1 实际像素，0 恢复适应屏幕；放大后拖动平移
 // ⛶ 按钮调用浏览器 Fullscreen API 进入真全屏
-// 用法：<img-lightbox :img="zoom" @close="zoom=null" />
-// zoom = {src, title, text}（单张）或 {list: [{src,title,text}...], index: n}（多张）
+// 驳回标记（2026-08-31）：list 项带 markKey 时显示「标问题」条——看大图发现
+// 细节问题可直接标记并填问题说明，emit toggle-mark / mark-reason 由父视图落状态
+// 用法：<img-lightbox :img="zoom" @close="..." @toggle-mark="..." @mark-reason="..." />
+// zoom = {src, title, text}（单张）或 {list: [{src,title,text,markKey,marked,reason}...], index: n}（多张）
 const ImgLightbox = {
   props: { img: { type: Object, default: null } },
-  emits: ['close'],
+  emits: ['close', 'toggle-mark', 'mark-reason'],
   data() { return { idx: 0, scale: 0, natW: 0, natH: 0, drag: null }; },  // scale=0 表示适应屏幕
   computed: {
     list() {
@@ -26,11 +28,21 @@ const ImgLightbox = {
     },
   },
   watch: {
-    img(v) {
-      this.idx = (v && v.index) || 0;
-      this.scale = 0;
-      if (v) window.addEventListener('keydown', this.onKey);
-      else window.removeEventListener('keydown', this.onKey);
+    img(v, old) {
+      // 列表签名：标记状态/说明文字变化不改变签名——避免父视图响应式重建
+      // zoom（如在弹窗里填问题说明）时误重置翻页位置与缩放
+      const sig = o => !o ? '' : (o.list
+        ? o.list.length + '|' + ((o.list[0] || {}).src || '')
+        : (o.src || ''));
+      if (v) {
+        if (!old) window.addEventListener('keydown', this.onKey);
+        if (sig(v) !== sig(old) || (v.index || 0) !== ((old && old.index) || 0)) {
+          this.idx = v.index || 0;
+          this.scale = 0;
+        }
+      } else {
+        window.removeEventListener('keydown', this.onKey);
+      }
     },
   },
   beforeUnmount() { window.removeEventListener('keydown', this.onKey); },
@@ -101,6 +113,15 @@ const ImgLightbox = {
            @load="onLoad" draggable="false" alt="">
     </div>
     <div v-if="cur.text" class="lb-caption"><p>{{ cur.text }}</p></div>
+    <div v-if="cur.markKey" class="lb-markbar">
+      <button class="lb-markbtn" :class="{on: cur.marked}"
+              @click="$emit('toggle-mark', cur)">
+        {{ cur.marked ? '✓ 已标记（点击取消）' : '⚑ 标问题' }}
+      </button>
+      <input v-if="cur.marked" class="lb-markreason" :value="cur.reason"
+             @input="$emit('mark-reason', { markKey: cur.markKey, reason: $event.target.value })"
+             placeholder="该图的问题说明（驳回/修正必填）">
+    </div>
     <button v-if="multi" class="lb-nav lb-prev" :disabled="idx===0" @click="prev">‹</button>
     <button v-if="multi" class="lb-nav lb-next" :disabled="idx===list.length-1" @click="next">›</button>
   </div>`,

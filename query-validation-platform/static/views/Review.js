@@ -10,7 +10,7 @@ const ReviewView = {
       seconds: 0, hbTimer: null, tickTimer: null,
       showReject: false, rejectReason: '', acting: false,
       marks: {},            // 定点驳回标记 {"page:2": {item_type, page_index, reason}}
-      zoom: null,           // 图片放大浏览 {src, title, text}
+      zoomOpen: false, zoomIndex: 0, // 图片放大浏览（computed zoom 组装，随标记状态响应式刷新）
       qSort: 'default',     // 待审队列排序：default（后端顺序）/created（最新优先）/risk（风险优先）/mode
       queueCollapsed: false, // 队列折叠：审内容时给主区让出全宽
       actRole: '',          // 实际审核用的会话角色（admin 审核时取任务 open_roles 之一）
@@ -44,6 +44,10 @@ const ReviewView = {
     refAssets() {
       return ((this.current && this.current.assets) || []).filter(a => a.source_type === 'official');
     },
+    zoom() {
+      if (!this.zoomOpen) return null;
+      return { list: this.zoomItems(), index: this.zoomIndex };
+    },
   },
   methods: {
     fmtTime, roleName, riskReason,
@@ -68,6 +72,10 @@ const ReviewView = {
         src: a.display_url || a.image_url,
         title: `P${a.page_index} · AI 生成`,
         text: this.pageCopyOf(a.page_index),
+        // 弹窗内驳回标记（2026-08-31）：交付配图带标记状态，参考图不可标记
+        markKey: this.markKey('image', a.page_index),
+        marked: this.isMarked('image', a.page_index),
+        reason: (this.marks[this.markKey('image', a.page_index)] || {}).reason || '',
       }));
       const ref = this.refAssets.map(a => ({
         src: a.display_url || a.image_url,
@@ -76,11 +84,20 @@ const ReviewView = {
       }));
       return gen.concat(ref);
     },
-    openZoom(a, isRef) {
+    openZoom(a) {
       const list = this.zoomItems();
       const src = a.display_url || a.image_url;
-      const index = Math.max(0, list.findIndex(x => x.src === src));
-      this.zoom = { list, index };
+      this.zoomIndex = Math.max(0, list.findIndex(x => x.src === src));
+      this.zoomOpen = true;
+    },
+    onLbToggleMark(item) {
+      const [type, p] = item.markKey.split(':');
+      this.toggleMark(type, Number(p));
+      this.showReject = true;   // 标记后引导到驳回面板（说明在弹窗里也可直接填）
+    },
+    onLbMarkReason({ markKey, reason }) {
+      const m = this.marks[markKey];
+      if (m) this.marks = { ...this.marks, [markKey]: { ...m, reason } };
     },
     async loadQueue() {
       if (!this.isReviewer) return;
@@ -265,7 +282,7 @@ const ReviewView = {
               </div>
             </div>
             <div class="card" v-if="genAssets.length">
-              <h2>交付配图 <span class="muted" style="font-weight:normal;font-size:13px">有问题的图可点「标问题」定点驳回，重试只重做该图</span></h2>
+              <h2>交付配图 <span class="muted" style="font-weight:normal;font-size:13px">点图可全屏看细节，有问题的图在图上或预览弹窗里点「标问题」定点驳回，重试只重做该图</span></h2>
               <div class="img-grid">
                 <figure v-for="a in genAssets" :key="a.page_index">
                   <img :src="a.display_url || a.image_url" loading="lazy" alt="" @click="openZoom(a, false)">
@@ -306,7 +323,7 @@ const ReviewView = {
         </div>
       </div>
     </template>
-    <img-lightbox :img="zoom" @close="zoom=null" />
+    <img-lightbox :img="zoom" @close="zoomOpen=false" @toggle-mark="onLbToggleMark" @mark-reason="onLbMarkReason" />
   </app-layout>`,
   created() { this.MODE = MODE; },
 };

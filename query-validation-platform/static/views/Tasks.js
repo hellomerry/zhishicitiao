@@ -15,7 +15,7 @@ const TasksView = {
       selected: {},           // 勾选的任务 id -> true（仅终态任务可勾选，用于批量移入回收站）
       exportJob: null, exportTimer: null,   // 任务式导出进度 {id,status,total,done,detail}
       showExport: false,     // 导出弹窗开关（关闭不中断后台打包）
-      zoom: null,            // 图片放大浏览 {src, title, text}
+      zoomOpen: false, zoomIndex: 0, // 图片放大浏览（computed zoom 组装，随标记状态响应式刷新）
     };
   },
   computed: {
@@ -29,6 +29,10 @@ const TasksView = {
       const m = {}; this.nodes.forEach(n => { m[n.name] = n.label; }); return m;
     },
     detailTask() { return this.detail && this.detail.task; },
+    zoom() {
+      if (!this.zoomOpen) return null;
+      return { list: this.zoomItems(), index: this.zoomIndex };
+    },
     actorName() { return (getUser() || {}).name || 'anonymous'; },
     liveOfDetail() {
       return this.detailTask ? (this.live[this.detailTask.id] || null) : null;
@@ -195,6 +199,10 @@ const TasksView = {
         src: a.display_url || a.image_url,
         title: `P${a.page_index} · ${a.version_no > 1 ? `修正版 第${a.version_no}版` : '初版'}`,
         text: this.pageCopyOf(a.page_index),
+        // 弹窗内驳回标记（2026-08-31）：仅修正模式下、仅正式版交付配图可标记
+        markKey: this.fixMode ? this.fixKey('image', a.page_index) : null,
+        marked: this.isFixMarked('image', a.page_index),
+        reason: (this.fixMarks[this.fixKey('image', a.page_index)] || {}).reason || '',
       }));
       const hist = this.historyAssets.map(a => ({
         src: a.display_url || a.image_url,
@@ -303,8 +311,16 @@ const TasksView = {
     openZoom(a, isRef) {
       const list = this.zoomItems();
       const src = a.display_url || a.image_url;
-      const index = Math.max(0, list.findIndex(x => x.src === src));
-      this.zoom = { list, index };
+      this.zoomIndex = Math.max(0, list.findIndex(x => x.src === src));
+      this.zoomOpen = true;
+    },
+    onLbToggleMark(item) {
+      const [type, p] = item.markKey.split(':');
+      this.toggleFixMark(type, Number(p));
+    },
+    onLbMarkReason({ markKey, reason }) {
+      const m = this.fixMarks[markKey];
+      if (m) this.fixMarks = { ...this.fixMarks, [markKey]: { ...m, reason } };
     },
     async retry() {
       if (!this.detailTask) return;
@@ -518,7 +534,7 @@ const TasksView = {
           </div>
 
           <div v-if="fixMode" class="card" style="margin:12px 0;border:1px solid #f59e0b">
-            <p style="margin:0 0 8px"><b>自助修正</b>：<span class="muted">在下方「分页文案 / 交付配图」中点「⚑ 标问题」标记有问题的项并填写说明，提交后仅重生成标记项（其余内容保留），完成后任务回到审核队列终审。</span></p>
+            <p style="margin:0 0 8px"><b>自助修正</b>：<span class="muted">在下方「分页文案 / 交付配图」中点「⚑ 标问题」标记有问题的项并填写说明（配图也可点开大图，在预览弹窗里直接标记），提交后仅重生成标记项（其余内容保留），完成后任务回到审核队列终审。</span></p>
             <template v-if="fixMarkList.length">
               <div v-for="m in fixMarkList" :key="m.item_type + m.page_index" style="display:flex;align-items:center;gap:8px;margin:6px 0">
                 <span class="tag tag-yellow" style="white-space:nowrap">{{ m.item_type === 'page' ? '文案' : '配图' }} P{{ m.page_index }}</span>
@@ -663,7 +679,7 @@ const TasksView = {
         </template>
       </div>
     </div>
-    <img-lightbox :img="zoom" @close="zoom=null" />
+    <img-lightbox :img="zoom" @close="zoomOpen=false" @toggle-mark="onLbToggleMark" @mark-reason="onLbMarkReason" />
   </app-layout>`,
   created() { this.STATUS = STATUS; this.MODE = MODE; },
 };
