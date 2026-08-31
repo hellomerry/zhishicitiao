@@ -57,21 +57,90 @@ class TestCompositePage:
         assert img.size == (1152, 1536)
         assert out != _solid_image()
 
-    def test_contrast_dark_panel_on_bright_bg(self):
-        # 亮背景 → 深面板：文字区平均亮度应明显低于原背景
-        bright = _solid_image(color=(240, 238, 232))
-        out = composite_page(bright, "标题：正文", 2)  # page 2 = top zone
-        img = Image.open(io.BytesIO(out))
-        cx, cy = 576, 200  # 顶部面板中心
-        r, g, b = img.getpixel((cx, cy))[:3]
-        assert 0.299 * r + 0.587 * g + 0.114 * b < 120
+    # ---- 6 页样式轮换（2026-08-31 用户反馈「全是黑框」）----
 
-    def test_contrast_light_panel_on_dark_bg(self):
-        dark = _solid_image(color=(30, 32, 38))
-        out = composite_page(dark, "标题：正文", 2)
-        img = Image.open(io.BytesIO(out))
-        r, g, b = img.getpixel((576, 200))[:3]
-        assert 0.299 * r + 0.587 * g + 0.114 * b > 150
+    @pytest.mark.parametrize("page_index,style", [
+        (1, "gradient_scrim"), (2, "glow_text"), (3, "light_panel"),
+        (4, "magazine_rule"), (5, "capsule_tags"), (6, "center_adaptive"),
+        (7, "gradient_scrim"),  # 页码取模：第 7 页回到封面样式
+    ])
+    def test_style_dispatch_per_page(self, monkeypatch, page_index, style):
+        called = []
+        fake = {name: (lambda n: lambda img, t, b: called.append(n))(name)
+                for name in text_composite._STYLES}
+        monkeypatch.setattr(text_composite, "_STYLES", fake)
+        composite_page(_solid_image(), "标题：正文", page_index)
+        assert called == [style]
+
+    def _zone_stats(self, img, x0, y0, x1, y1):
+        """区域 (平均亮度, 最暗像素亮度, 最亮像素亮度)。"""
+        small = img.crop((x0, y0, x1, y1)).convert("RGB").resize((64, 64))
+        data = small.tobytes()
+        lums = [0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]
+                for i in range(0, len(data), 3)]
+        return sum(lums) / len(lums), min(lums), max(lums)
+
+    def test_glow_text_no_panel_on_bright_bg(self):
+        # P2 亮背景：无面板（区域均值仍亮）+ 深色文字（存在暗像素）
+        out = composite_page(_solid_image(color=(240, 238, 232)), "标题：正文内容", 2)
+        avg, dark, _ = self._zone_stats(Image.open(io.BytesIO(out)), 96, 88, 1056, 500)
+        assert avg > 180   # 没有深色面板压住
+        assert dark < 90   # 有深色文字
+
+    def test_glow_text_white_on_dark_bg(self):
+        # P2 暗背景：白字（存在亮像素）+ 无浅面板（区域均值仍暗）
+        out = composite_page(_solid_image(color=(30, 32, 38)), "标题：正文内容", 2)
+        avg, _, light = self._zone_stats(Image.open(io.BytesIO(out)), 96, 88, 1056, 500)
+        assert avg < 100
+        assert light > 200
+
+    def test_gradient_scrim_darkens_bottom_naturally(self):
+        # P1 封面：底部渐变蒙版——底边被压暗，且蒙版上缘比底边亮（渐变非色块）
+        bright = _solid_image(color=(240, 238, 232))
+        img = Image.open(io.BytesIO(composite_page(bright, "大标题：一句钩子", 1)))
+        bottom = self._zone_stats(img, 96, 1500, 1056, 1530)[0]
+        band_top = self._zone_stats(img, 96, 1000, 1056, 1030)[0]
+        assert bottom < 150
+        assert band_top > bottom + 30
+
+    def test_light_panel_on_dark_bg(self):
+        # P3 特写：浅色面板——暗背景底部面板中心应明显变亮
+        out = composite_page(_solid_image(color=(30, 32, 38)), "标题：正文内容", 3)
+        avg, _, _ = self._zone_stats(Image.open(io.BytesIO(out)), 300, 1250, 850, 1350)
+        assert avg > 180
+
+    def test_capsule_tags_are_light_on_dark_bg(self):
+        # P5 场景：浅色胶囊——暗背景顶部出现成片的近白像素
+        out = composite_page(_solid_image(color=(30, 32, 38)), "标题：正文一句。正文二句。", 5)
+        _, _, light = self._zone_stats(Image.open(io.BytesIO(out)), 96, 88, 1056, 600)
+        assert light > 220
+
+    def test_center_adaptive_dark_text_on_bright_bg(self):
+        # P6 总结：亮区深字、无面板（中部均值仍亮，存在暗文字像素）
+        out = composite_page(_solid_image(color=(240, 238, 232)), "总结：一句结论收尾。", 6)
+        avg, dark, _ = self._zone_stats(Image.open(io.BytesIO(out)), 96, 600, 1056, 950)
+        assert avg > 180
+        assert dark < 90
+
+    # ---- 标点孤行修复（2026-08-31）----
+
+    class _FixedDraw:
+        """等宽测量桩：每字 10px。"""
+        @staticmethod
+        def textlength(s, font=None):
+            return 10 * len(s)
+
+    def test_wrap_punctuation_joins_previous_line(self):
+        lines = text_composite._wrap(self._FixedDraw, "aaaaaa。bb", None, 60)
+        assert lines == ["aaaaaa。", "bb"]  # 「。」并入上一行，不孤行
+
+    def test_wrap_closing_bracket_joins_previous_line(self):
+        lines = text_composite._wrap(self._FixedDraw, 'aaaaaa」bb', None, 60)
+        assert lines == ["aaaaaa」", "bb"]
+
+    def test_wrap_normal_break_unchanged(self):
+        lines = text_composite._wrap(self._FixedDraw, "aaaaaabb", None, 60)
+        assert lines == ["aaaaaa", "bb"]
 
     def test_nonstandard_size_normalized(self):
         # 非 3:4 输入也归一到 1152x1536（与交付导出尺寸一致）
