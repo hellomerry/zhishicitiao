@@ -37,7 +37,7 @@ async def test_catalog_returns_system_defaults():
         r = await ac.get("/api/prompts/catalog")
     assert r.status_code == 200
     stages = {s["stage"]: s for s in r.json()["stages"]}
-    assert set(stages) == {"draft_gen", "page_split", "image_gen", "page_regen"}
+    assert set(stages) == {"draft_gen", "draft_polish", "page_split", "image_gen", "page_regen"}
     assert len(stages["draft_gen"]["items"]) == 3       # 三个模式
     assert stages["page_split"]["items"][0]["mode"] is None
     assert stages["image_gen"]["items"][0]["system"]    # 系统默认非空

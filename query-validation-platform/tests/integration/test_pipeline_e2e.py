@@ -25,9 +25,9 @@ async def test_pipeline_records_node_events():
         task_id = task.id
     with patch("src.pipeline.nodes.call_with_failover", return_value=FAKE_DRAFT):
         results = await run_pipeline(task_id)
-    assert len(results) == 13
+    assert len(results) == 14
     assert results[0]["node"] == "task_import"
     async with SessionLocal() as session:
         events = await session.execute(
             select(NodeEvent).where(NodeEvent.task_id == task_id))
-        assert len(events.scalars().all()) == 13
+        assert len(events.scalars().all()) == 14

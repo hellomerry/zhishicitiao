@@ -7,7 +7,7 @@ from src.gateway.prompt_versions import (FIXED_IMAGE_STYLE_SENTENCE,
 def test_draft_prompt_per_mode():
     assert "对比" in get_draft_prompt("compare")
     assert "单品" in get_draft_prompt("single")
-    assert "图文内容" in get_draft_prompt("general")
+    assert "科普/教程类图文" in get_draft_prompt("general")
 
 
 def test_draft_prompt_unknown_mode_falls_back_to_general():

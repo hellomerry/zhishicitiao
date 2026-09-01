@@ -23,4 +23,4 @@ async def test_full_pipeline_all_13_nodes():
         task_id = task.id
     with patch("src.pipeline.nodes.call_with_failover", return_value=FAKE_DRAFT):
         results = await run_pipeline(task_id)
-    assert len(results) == 13
+    assert len(results) == 14

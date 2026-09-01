@@ -46,7 +46,7 @@ def text_similarity(expected: str, actual: str) -> float:
 
 NODES = [
     "task_import", "entity_bind", "evidence_build", "draft_gen",
-    "rule_check", "page_split", "asset_gen", "ocr_read",
+    "draft_polish", "rule_check", "page_split", "asset_gen", "ocr_read",
     "cross_check", "risk_classify", "review_queue",
     "batch_signoff", "publish_snapshot"
 ]
@@ -104,6 +104,13 @@ def _node_summary(node_name: str, output: dict) -> dict:
         s["preview"] = text[:220]
         s["length"] = len(text)
         s["model"] = output.get("model_version")
+    elif node_name == "draft_polish":
+        s["polished"] = output.get("polished", False)
+        if output.get("polished"):
+            text = output.get("text", "")
+            s["preview"] = text[:220]
+            s["length"] = len(text)
+            s["model"] = output.get("model_version")
     elif node_name == "asset_gen":
         s["count"] = output.get("asset_count", 0)
         s["image_urls"] = output.get("image_urls", [])
@@ -387,6 +394,17 @@ async def node_entity_bind(input_data: dict) -> dict:
             "cost_cny": settings.openserp_cost_per_call * search_calls}
 
 
+# 信源可信度分级（2026-09-01 对齐人工审核 SOP 的采信优先级：
+# gov/edu 官方信源 > 百科类 > 普通网页；原实现一律硬编码 P2）
+def source_level_for(url: str) -> str:
+    u = (url or "").lower()
+    if any(k in u for k in ("gov.cn", "edu.cn", ".gov/", ".edu/")):
+        return "P0"
+    if any(k in u for k in ("baike.baidu.com", "wikipedia.org")):
+        return "P2"
+    return "P3"
+
+
 async def node_evidence_build(input_data: dict) -> dict:
     from src.models.tasks import Task
     from src.models.entities import Claim, Evidence
@@ -409,7 +427,8 @@ async def node_evidence_build(input_data: dict) -> dict:
         await session.flush()
         for r in results:
             session.add(Evidence(claim_id=claim.id, source_url=r["url"] or "no-url",
-                                 source_level="P2", excerpt=(r["summary"] or "")[:500],
+                                 source_level=source_level_for(r["url"] or ""),
+                                 excerpt=(r["summary"] or "")[:500],
                                  supports=True))
         # 4. 争议预警：创建 P1 问题单（事实审核 A 域）
         if conflicts:
@@ -458,6 +477,46 @@ async def node_draft_gen(input_data: dict) -> dict:
             model_version=result["model_version"], prompt_version=prompt_version))
         await session.commit()
     return {"text": result["text"], "model_version": result["model_version"],
+            "prompt_version": prompt_version, "cost_cny": result["cost_cny"],
+            "degraded": result["degraded"]}
+
+
+async def node_draft_polish(input_data: dict) -> dict:
+    """校稿润色（对齐人工两轮校稿）：删夸大表述、削 AI 腔、控制字数、补免责声明。
+    LLM 失败或输出异常时不阻塞流水线，沿用 draft_gen 原稿。"""
+    from src.models.tasks import Task
+    from src.models.drafts import Draft
+    from src.gateway.prompt_versions import get_effective_prompt
+    async with SessionLocal() as session:
+        task = (await session.execute(
+            select(Task).where(Task.id == input_data["task_id"]))).scalar_one()
+        owner_id = task.created_by
+        text = await _latest_draft_body(session, input_data["task_id"])
+    if not text:
+        raise RuntimeError("draft_polish: 缺少 draft_gen 产物")
+    template = await get_effective_prompt("draft_polish", None, owner_id)
+    prompt = template.replace("{body}", text)
+    prompt_version = "draft_polish_v1"
+    regen = input_data.get("regen") or {}
+    if regen.get("feedback"):
+        prompt_version = f"draft_polish_v1_regen{regen.get('round', 1)}"
+    try:
+        result = await call_with_failover(prompt, DEEPSEEK_MODEL, KIMI_MODEL)
+    except Exception:
+        return {"polished": False, "reason": "llm_unavailable"}
+    out = (result["text"] or "").strip()
+    if len(out) < 100:
+        return {"polished": False, "reason": "output_too_short"}
+    async with SessionLocal() as session:
+        from sqlalchemy import func
+        max_v = (await session.execute(
+            select(func.max(Draft.version)).where(
+                Draft.task_id == input_data["task_id"]))).scalar() or 0
+        session.add(Draft(
+            task_id=input_data["task_id"], version=max_v + 1, body=out,
+            model_version=result["model_version"], prompt_version=prompt_version))
+        await session.commit()
+    return {"text": out, "polished": True, "model_version": result["model_version"],
             "prompt_version": prompt_version, "cost_cny": result["cost_cny"],
             "degraded": result["degraded"]}
 

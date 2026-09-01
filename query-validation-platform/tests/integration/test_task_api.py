@@ -259,7 +259,7 @@ async def test_meta_nodes():
     async with _client() as ac:
         data = (await ac.get("/api/meta/nodes")).json()
     nodes = data["nodes"]
-    assert len(nodes) == 13
+    assert len(nodes) == 14
     assert nodes[0] == {"name": "task_import", "label": "任务导入"}
     assert nodes[-1]["name"] == "publish_snapshot"
     assert all(n["label"] for n in nodes)

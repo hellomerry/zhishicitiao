@@ -6,7 +6,7 @@ from src.stream.bus import bus
 
 NODE_LABEL = {
     "task_import": "任务导入", "entity_bind": "搜实景图", "evidence_build": "证据+交叉验证",
-    "draft_gen": "正文生成", "rule_check": "规则质检", "page_split": "分页文案",
+    "draft_gen": "正文生成", "draft_polish": "校稿润色", "rule_check": "规则质检", "page_split": "分页文案",
     "asset_gen": "配图生成", "ocr_read": "OCR回读", "cross_check": "图文一致性",
     "risk_classify": "风险分流", "review_queue": "审核队列", "batch_signoff": "批次会签",
     "publish_snapshot": "发布快照",
@@ -14,9 +14,10 @@ NODE_LABEL = {
     "page_regen": "单页重写", "asset_regen": "定点重生图",
 }
 
-# 流水线步骤条顺序（13 节点；重生成节点不在其中）
+# 流水线步骤条顺序（14 节点；重生成节点不在其中）
 NODE_ORDER = [
-    "task_import", "entity_bind", "evidence_build", "draft_gen", "rule_check",
+    "task_import", "entity_bind", "evidence_build", "draft_gen", "draft_polish",
+    "rule_check",
     "page_split", "asset_gen", "ocr_read", "cross_check", "risk_classify",
     "review_queue", "batch_signoff", "publish_snapshot",
 ]
@@ -25,6 +26,10 @@ NODE_ORDER = [
 def _done_msg(node: str, data: dict) -> str:
     if node == "draft_gen":
         return f"模型 {data.get('model', '')} · {data.get('length', 0)}字"
+    if node == "draft_polish":
+        if not data.get("polished"):
+            return "沿用原稿"
+        return f"校稿后 {data.get('length', 0)}字"
     if node == "asset_gen":
         return f"{data.get('count', 0)}张图"
     if node == "evidence_build":
@@ -105,7 +110,7 @@ class ProgressTracker:
                 "phase": "done", "elapsed": data.get("elapsed"),
                 "msg": _done_msg(node, data),
             })
-            if node == "draft_gen" and data.get("preview"):
+            if node in ("draft_gen", "draft_polish") and data.get("preview"):
                 t["preview"] = data["preview"]
                 t["model"] = data.get("model", "")
             elif node == "asset_gen" and data.get("image_urls"):
@@ -147,7 +152,7 @@ class ProgressTracker:
             line = f"[{ts}] ✘ 步骤失败 {short}  {label}{el}  {data.get('error', '')[:120]}"
         elif etype == "node_finished":
             extra = ""
-            if node == "draft_gen":
+            if node in ("draft_gen", "draft_polish"):
                 extra = f"（{data.get('length', 0)}字）"
             elif node == "asset_gen":
                 extra = f"（{data.get('count', 0)}张）"
