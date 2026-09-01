@@ -13,6 +13,8 @@ import csv
 import io
 import uuid
 
+import httpx
+
 from fastapi import APIRouter, Form, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from sqlalchemy import select, text
@@ -281,3 +283,134 @@ async def set_default_style(payload: DefaultStyleIn):
         await session.commit()
     await log_action(payload.actor, "style_kb", f"设默认风格「{name}」")
     return {"ok": True, "default_style": name}
+
+
+# ===== 风格模板开局 + 样例学风格（2026-09-01，「不同用户不同风格」方案）=====
+# 设计原则：风格差异来自用户显式选择（即时生效），偏好学习只做细节微调、
+# 永不替换用户钉选的风格（学习降级见 style_pick.py）
+
+
+@router.get("/api/styles/templates")
+async def list_templates():
+    """内置风格模板列表（onboarding 选风格样卡数据源）：名称/关键词/描述词。"""
+    from src.services.style_pick import IMAGE_STYLE_LIBRARY
+    return {"items": [{"style_name": n, "keywords": k, "description": d}
+                      for n, d, k in IMAGE_STYLE_LIBRARY]}
+
+
+@router.get("/api/styles/onboarding_state")
+async def onboarding_state(actor: str = ""):
+    """是否需要风格开局引导：个人库为空且未钉默认风格 → true（新用户首次进入）。"""
+    async with SessionLocal() as session:
+        uid, _ = await _actor(session, actor)
+        mine = (await session.execute(
+            select(StyleKeyword).where(StyleKeyword.owner_id == uid))).scalars().all()
+        default = (await session.execute(
+            text("SELECT default_style FROM users WHERE id = :u"),
+            {"u": uid})).scalar()
+    return {"needs_onboarding": not mine and not default,
+            "default_style": default, "mine_count": len(mine)}
+
+
+class CloneTemplatesIn(BaseModel):
+    actor: str
+    style_names: list[str]          # 要克隆的内置模板名（1-3 个）
+    pin: str = ""                   # 同时钉为默认的风格名（须含在 style_names 内）
+
+
+@router.post("/api/styles/clone_templates")
+async def clone_templates(payload: CloneTemplatesIn):
+    """把内置风格模板克隆到个人库（同名已存在则跳过、保留用户自己改过的版本），
+    可顺带钉选默认——新用户 30 秒完成风格开局，无需等待偏好学习积累。"""
+    from src.services.style_pick import IMAGE_STYLE_LIBRARY
+    builtin = {n: (d, k) for n, d, k in IMAGE_STYLE_LIBRARY}
+    names = [n.strip() for n in payload.style_names if n.strip() in builtin]
+    if not names:
+        raise HTTPException(status_code=422, detail="没有可克隆的内置模板名")
+    if payload.pin and payload.pin not in names:
+        raise HTTPException(status_code=422, detail="pin 必须含在 style_names 内")
+    cloned, skipped = [], []
+    async with SessionLocal() as session:
+        uid, _ = await _actor(session, payload.actor)
+        for name in names[:3]:
+            exist = (await session.execute(
+                select(StyleKeyword).where(StyleKeyword.owner_id == uid,
+                                           StyleKeyword.style_name == name))
+            ).scalars().first()
+            if exist:
+                skipped.append(name)
+                continue
+            desc, kws = builtin[name]
+            session.add(StyleKeyword(owner_id=uid, style_name=name,
+                                     keywords=kws, description=desc))
+            cloned.append(name)
+        if payload.pin:
+            await session.execute(
+                text("UPDATE users SET default_style = :s WHERE id = :u"),
+                {"s": payload.pin, "u": uid})
+        await session.commit()
+    await log_action(payload.actor, "style_kb",
+                     f"克隆风格模板 {cloned}" +
+                     (f"，钉选默认「{payload.pin}」" if payload.pin else ""))
+    return {"ok": True, "cloned": cloned, "skipped": skipped,
+            "default_style": payload.pin or None}
+
+
+_LEARN_PROMPT = """你是小红书图文风格分析师。分析这张图片的视觉风格，只输出 JSON：
+{"style_name": "≤8字的风格名",
+ "keywords": "适用主题关键词，逗号分隔，5-8个",
+ "description": "视觉风格描述词（40-80字）：底色/主体质感/光影/标题排版与配色/文字载体形式/装饰元素/留白比例，要能直接用作 AI 生图提示词的风格描述部分"}
+不要输出任何其他内容。"""
+
+
+@router.post("/api/styles/learn")
+async def learn_from_images(actor: str = Form(""),
+                            files: list[UploadFile] = File(...)):
+    """样例学风格：上传 1-5 张满意图，qwen-vl 提炼风格草稿（名称/关键词/描述词）
+    返回给用户编辑确认后再经 POST /api/styles 保存——把离线的「样例训练」变成
+    每个用户自助的在线能力。VL 调用失败 502，不落库。"""
+    import base64
+    import json as _json
+    from src.config import settings
+    async with SessionLocal() as session:
+        await _actor(session, actor)
+    files = files[:5]
+    if not files:
+        raise HTTPException(status_code=422, detail="至少上传 1 张图片")
+    content = []
+    for f in files:
+        data = await f.read()
+        if len(data) > 15 * 1024 * 1024:
+            raise HTTPException(status_code=422, detail=f"{f.filename} 超过 15MB")
+        mime = f.content_type if (f.content_type or "").startswith("image/") \
+            else "image/png"
+        content.append({"type": "image_url", "image_url": {
+            "url": f"data:{mime};base64," + base64.b64encode(data).decode()}})
+    if len(files) > 1:
+        content.append({"type": "text", "text":
+                        f"以上 {len(files)} 张图是同一套目标风格的样例。"})
+    content.append({"type": "text", "text": _LEARN_PROMPT})
+    payload = {"model": settings.vl_review_model,
+               "messages": [{"role": "user", "content": content}],
+               "max_tokens": 500}
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                f"{settings.ocr_base_url}/chat/completions",
+                headers={"Authorization":
+                         f"Bearer {settings.dashscope_api_key}"},
+                json=payload)
+        if resp.status_code != 200:
+            raise RuntimeError(f"vl {resp.status_code}")
+        raw = resp.json()["choices"][0]["message"]["content"].strip()
+        raw = raw.strip("`").lstrip("json").strip()
+        j = _json.loads(raw[raw.index("{"):raw.rindex("}") + 1])
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"风格分析失败: {e}")
+    await log_action(actor, "style_kb",
+                     f"从 {len(files)} 张样例图提炼风格草稿")
+    return {"style_name": str(j.get("style_name", ""))[:20],
+            "keywords": str(j.get("keywords", ""))[:200],
+            "description": str(j.get("description", ""))[:300]}

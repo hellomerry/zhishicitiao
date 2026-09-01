@@ -58,13 +58,15 @@ _PICK_PROMPT = """你是小红书图文的视觉总监。根据下面的选题�
 {body}"""
 
 
-def _keyword_pick(candidates: list, text: str) -> tuple:
-    """关键词命中评分兜底：命中数最多者胜，并列（含全零）随机。"""
+def _keyword_pick(candidates: list, text: str, weights: dict = None) -> tuple:
+    """关键词命中评分兜底：命中数 × 偏好权重（学习降级，上限 2.0）最高者胜，
+    并列（含全零）随机。"""
+    weights = weights or {}
     scored = []
     for name, desc, keywords in candidates:
         hits = sum(1 for kw in re.split(r"[,，]", keywords or "")
                    if kw.strip() and kw.strip() in text)
-        scored.append((hits, name, desc))
+        scored.append((hits * weights.get(name, 1.0), name, desc))
     best = max(s[0] for s in scored)
     top = [(n, d) for h, n, d in scored if h == best]
     return random.choice(top)
@@ -92,6 +94,41 @@ async def _default_style(owner_id) -> str | None:
             {"u": owner_id})).scalar()
 
 
+async def _usage_weights(owner_id) -> tuple:
+    """近 20 条任务（滑动窗口）的风格使用统计 → ({style: weight}, 窗口任务数)。
+
+    学习降级设计（2026-09-01「不同用户不同风格」方案）：偏好学习只在用户
+    **未钉选默认风格**时参与选风格，且只做加权排序、永不替换用户选择——
+    权重 = 1 + 使用频次加成 × (0.5 + 通过率)，上限 2.0，避免正反馈收敛
+    「越用越窄」；钉了默认的用户走优先级 0 直通，学习完全不影响。
+    """
+    if owner_id is None:
+        return {}, 0
+    async with SessionLocal() as session:
+        rows = (await session.execute(text(
+            "SELECT gen_image_style, status FROM tasks"
+            " WHERE created_by = :u AND gen_image_style IS NOT NULL"
+            "   AND gen_image_style <> ''"
+            " ORDER BY created_at DESC LIMIT 20"), {"u": owner_id})).all()
+        # 探索位按全量任务数取模（窗口满 20 后 window_n 恒为 20，取模会每次都
+        # 触发探索；全量计数才保证每 5 条任务恰好 1 条探索）
+        total = (await session.execute(text(
+            "SELECT count(*) FROM tasks"
+            " WHERE created_by = :u AND gen_image_style IS NOT NULL"
+            "   AND gen_image_style <> ''"), {"u": owner_id})).scalar() or 0
+    uses, appr = {}, {}
+    for style, status in rows:
+        uses[style] = uses.get(style, 0) + 1
+        if status == "approved":
+            appr[style] = appr.get(style, 0) + 1
+    weights = {}
+    for style, n in uses.items():
+        rate = appr.get(style, 0) / n
+        w = 1.0 + min(1.0, 0.15 * n) * (0.5 + rate)
+        weights[style] = round(min(2.0, w), 3)
+    return weights, total
+
+
 async def pick_image_style(query: str, body: str, owner_id=None, llm_call=None) -> tuple:
     """选定生图视觉风格，返回 (风格名, 描述词)。
 
@@ -100,7 +137,7 @@ async def pick_image_style(query: str, body: str, owner_id=None, llm_call=None) 
     缺省走 failover 主备通道。LLM 失败/结果不在库中自动退回关键词命中评分，
     任何情况下都返回库内合法风格。
     """
-    # 优先级 0：个人默认风格直通（跳过 LLM）
+    # 优先级 0：个人默认风格直通（跳过 LLM 与一切学习加权——用户显式选择永远优先）
     default = await _default_style(owner_id)
     if default:
         return default, await style_desc_for(default, owner_id)
@@ -110,13 +147,26 @@ async def pick_image_style(query: str, body: str, owner_id=None, llm_call=None) 
         async def llm_call(prompt):
             return await call_with_failover(prompt, DEEPSEEK_MODEL, KIMI_MODEL,
                                             max_retries=1)
-    # 优先级 1/2/3：个人库 → 公共库 → 内置 8 风格
+    # 优先级 1/2/3：个人库 → 公共库 → 内置风格
     candidates = await _style_candidates(owner_id, public=False) if owner_id else []
     if not candidates:
         candidates = await _style_candidates(owner_id, public=True)
     if not candidates:
         candidates = list(IMAGE_STYLE_LIBRARY)
     names = {n for n, _, _ in candidates}
+    # 学习降级：未钉选时才用历史偏好加权（上限 2.0）；候选排序把高权重风格
+    # 放前面（温和引导 LLM），关键词兜底按 命中数×权重 评分
+    weights, task_n = await _usage_weights(owner_id)
+    if weights:
+        candidates = sorted(
+            candidates, key=lambda c: weights.get(c[0], 1.0), reverse=True)
+    # 探索位（防收敛）：候选 ≥3 时每 5 条任务有 1 条从权重下半区随机选一种，
+    # 保证用户始终能接触到非高频风格、不被锁死在历史上
+    if weights and len(candidates) >= 3 and task_n > 0 and task_n % 5 == 0:
+        bottom = candidates[len(candidates) // 2:]
+        name, desc = random.choice(bottom)[0], None
+        desc = next(d for n, d, _ in candidates if n == name)
+        return name, desc
     try:
         library = "\n".join(f"- {n}：{d}" for n, d, _ in candidates)
         prompt = (_PICK_PROMPT.replace("{library}", library)
@@ -128,7 +178,8 @@ async def pick_image_style(query: str, body: str, owner_id=None, llm_call=None) 
             return picked, next(d for n, d, _ in candidates if n == picked)
     except Exception:
         traceback.print_exc()  # LLM 失败不阻塞出图，走关键词兜底
-    return _keyword_pick(candidates, (query or "") + "\n" + (body or "")[:500])
+    return _keyword_pick(candidates, (query or "") + "\n" + (body or "")[:500],
+                         weights=weights)
 
 
 async def style_desc_for(style_name: str, owner_id=None) -> str | None:

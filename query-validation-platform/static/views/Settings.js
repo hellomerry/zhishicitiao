@@ -8,6 +8,8 @@ const SettingsView = {
       styleItems: [],
       styleForm: { style_name: '', keywords: '', description: '', enabled: true, public: false },
       styleImportMsg: '', styleImportPublic: false,
+      // 样例图学习风格草稿（2026-09-02）：VL 提炼后填入下方表单，用户确认再保存
+      styleLearnLoading: false, styleLearnMsg: '',
       // 我的风格偏好统计 + 个人默认风格（使用中学习，2026-08-28）
       styleStats: [], styleDefault: null,
       // 密码
@@ -90,6 +92,26 @@ const SettingsView = {
         this.loadStyles();
       } catch (e) { this.styleImportMsg = '导入失败：' + e.message; }
       ev.target.value = '';
+    },
+    // ---------- 样例图学习风格 ----------
+    async learnStyle(ev) {
+      const files = [...ev.target.files];
+      ev.target.value = '';
+      if (!files.length) return;
+      if (files.length > 5) { this.styleLearnMsg = '最多选 5 张图'; return; }
+      const big = files.find(f => f.size > 15 * 1024 * 1024);
+      if (big) { this.styleLearnMsg = `「${big.name}」超过 15MB`; return; }
+      const fd = new FormData();
+      fd.append('actor', this.user.name || 'anonymous');
+      files.forEach(f => fd.append('files', f));
+      this.styleLearnLoading = true; this.styleLearnMsg = '';
+      try {
+        const r = await api.postForm('/api/styles/learn', fd);
+        this.styleForm = { ...this.emptyStyleForm(), style_name: r.style_name,
+                           keywords: r.keywords, description: r.description };
+        this.styleLearnMsg = '已提炼风格草稿并填入下方表单，可修改后点「添加」保存到个人库';
+      } catch (e) { this.styleLearnMsg = '学习失败：' + e.message; }
+      finally { this.styleLearnLoading = false; }
     },
     // ---------- 使用中学习：默认风格 / 偏好建议 ----------
     async setDefaultStyle(name) {
@@ -327,11 +349,14 @@ const SettingsView = {
       <div style="display:flex;gap:10px;align-items:center;margin:10px 0;flex-wrap:wrap">
         <input ref="styleCsv" type="file" accept=".csv" style="display:none" @change="importStyles">
         <button class="btn btn-outline btn-sm" @click="$refs.styleCsv.click()">📥 导入训练数据 CSV（style_name,keywords,description）</button>
+        <input ref="styleLearnFiles" type="file" accept="image/*" multiple style="display:none" @change="learnStyle">
+        <button class="btn btn-outline btn-sm" :disabled="styleLearnLoading" @click="$refs.styleLearnFiles.click()">{{ styleLearnLoading ? '分析中…（约需 1-2 分钟）' : '⤒ 从样例图学习（1-5 张）' }}</button>
         <a class="btn btn-outline btn-sm" style="text-decoration:none" href="/api/styles/template" download>下载模板</a>
         <label v-if="isAdmin" style="display:flex;align-items:center;gap:4px;font-size:13px">
           <input type="checkbox" v-model="styleImportPublic" style="width:auto"> 导入到公共库
         </label>
         <span v-if="styleImportMsg" class="muted" style="font-size:13px">{{ styleImportMsg }}</span>
+        <span v-if="styleLearnMsg" class="muted" style="font-size:13px">{{ styleLearnMsg }}</span>
       </div>
       <form @submit.prevent="saveStyle" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <input v-model="styleForm.style_name" placeholder="风格名（如：科技蓝调）" required style="flex:1">
