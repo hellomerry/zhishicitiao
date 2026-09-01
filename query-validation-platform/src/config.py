@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     max_concurrency: int = 1
     # 配图间隔（秒）：每张图之间留足处理时间，避免触发限流
     image_gen_delay_seconds: float = 5.0
+    # 并行出图（2026-09-01 借鉴 8003）：>1 时 6 页用 Semaphore 限流并发生成，
+    # 去重/尺寸校验挪到批后；1 = 保持串行+间隔旧行为
+    image_gen_parallel: int = 1
     image_cost_per_image_cny: float = 0.2   # 每张生图成本（元，客户确认 2026-08-19）
     # OCR（阿里百炼 qwen 系列，模型可按需换 qwen3.5-ocr / qwen3-vl-flash 等）
     ocr_model: str = "qwen-vl-ocr"
@@ -61,6 +64,13 @@ class Settings(BaseSettings):
     # 出图文字质检（OCR 与分页文案对撞，防文字扭曲，2026-08-25 用户反馈）
     ocr_text_similarity_threshold: float = 0.85  # 低于该相似度判为文字扭曲
     asset_text_max_attempts: int = 2             # 每张图质检失败后的最大重生成次数
+    # VL 视觉二审（2026-09-01 借鉴 8003 ai_review）：OCR 关卡后再查文字过载/
+    # 实景嵌入协调性，不达标带 VL 建议自动重生成，仍败打 |vl_flag 交人工审核；
+    # VL 调用失败默认通过不误杀。qwen-vl-ocr 是 OCR 专用模型，判断类任务用
+    # qwen3-vl-flash；enabled=false 关闭该层
+    vl_review_enabled: bool = True
+    vl_review_model: str = "qwen3-vl-flash"
+    vl_review_max_rounds: int = 2
     # 按次计费的外部服务（价格不确定，可手工补充，单位：元/次）
     doubao_search_cost_per_call: float = 0.0   # 豆包搜索（证据包）
     openserp_cost_per_call: float = 0.0        # OpenSERP 搜实景图

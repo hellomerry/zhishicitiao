@@ -826,6 +826,45 @@ async def _text_quality_gate(asset: dict, prompt: str, reference_urls,
         attempts += dedupe_extra
 
 
+async def _vl_quality_gate(asset: dict, prompt: str, reference_urls,
+                           task_id, page_index: int, page_body: str,
+                           seen_hashes: set, ref_mode: bool,
+                           provider: str = None) -> tuple:
+    """VL 视觉二审（2026-09-01 借鉴 8003 ai_review）：OCR 文字关卡之后再查
+    OCR 发现不了的问题——文字量过载/缺失、实景图嵌入不协调（大小/位置/对比度/
+    遮挡主体）。不达标时把 VL 给的调整建议拼进提示词自动重生成（最多
+    settings.vl_review_max_rounds 轮）；仍败在 model_version 打 |vl_flag 标记
+    交人工审核。VL 调用失败默认通过不误杀。返回 (asset, 重生成次数, VL 成本)。"""
+    from src.services.vl_review import vl_review_image
+    extra = 0
+    vl_cost = 0.0
+    for rnd in range(1, settings.vl_review_max_rounds + 1):
+        review = await vl_review_image(asset["image_url"], page_body,
+                                       page_index, ref_mode)
+        vl_cost += review.get("cost_cny", 0.0)
+        if review["pass"]:
+            return asset, extra, vl_cost
+        flagged = review.get("issues") or ["视觉审核未通过"]
+        if rnd >= settings.vl_review_max_rounds:
+            asset["model_version"] += f"|vl_flag:{'；'.join(flagged)[:60]}"
+            print(f"[asset_gen] 任务{task_id} 第{page_index}页 VL 审核 "
+                  f"{rnd} 轮仍不达标：{'；'.join(flagged)[:80]}，打标交人工审核")
+            return asset, extra, vl_cost
+        adjust = review.get("suggest") or "精简图上文字，主体更突出，实景图嵌入更协调"
+        print(f"[asset_gen] 任务{task_id} 第{page_index}页 VL 审核发现问题："
+              f"{'；'.join(flagged)[:80]}，按建议重生成（第 {rnd} 轮）")
+        regen_prompt = (prompt + f"（AI 视觉审核第{rnd}轮发现问题："
+                        f"{'；'.join(flagged)[:80]}。调整要求：{adjust[:120]}）")
+        regen = await _generate_single_asset(
+            task_id, page_index, regen_prompt, reference_urls, provider=provider)
+        extra += 1
+        asset, dedupe_extra = await _dedupe_and_validate(
+            regen, prompt, reference_urls, task_id, page_index, seen_hashes,
+            page_body=page_body, provider=provider)
+        extra += dedupe_extra
+    return asset, extra, vl_cost
+
+
 async def node_asset_gen(input_data: dict) -> dict:
     import asyncio
     from src.models.tasks import Task
@@ -954,30 +993,64 @@ async def node_asset_gen(input_data: dict) -> dict:
                                         page_subject=(page_subjects[len(prompts)]
                                                       if page_subjects else None),
                                         has_refs=general_has_refs))
-    # 串行 + 间隔生成：避免测试账户限流，保证每张图有足够处理时间
+    # 生成策略（2026-09-01 借鉴 8003 并行出图）：image_gen_parallel>1 时 6 页
+    # Semaphore 限流并发（去重/校验仍在页内串行，seen_hashes 由 asyncio 单线程
+    # 协程共享、无竞态）；=1 保持串行+间隔旧行为（防测试账户限流）
     results = []
     seen_hashes = set()
     extra_gen = 0
     ocr_gate_cost = 0.0
-    for i in range(1, 7):
+
+    async def _gen_one_page(i: int) -> tuple:
+        """生成一页：出图 → 去重/尺寸校验/文字合成 → OCR 文字关卡 → VL 视觉二审。
+        返回 (asset, 额外生成次数, 审核成本)；mock 模式只出图不审核。"""
         refs_i = _page_refs(i) if reference_urls else None
         r = await _generate_single_asset(
             input_data["task_id"], i, prompts[i - 1], refs_i,
             provider=img_provider)
-        if not settings.mock_image_gen:
-            page_body = page_list[i - 1].body if i - 1 < len(page_list) else ""
-            r, extra = await _dedupe_and_validate(
-                r, prompts[i - 1], refs_i, input_data["task_id"], i, seen_hashes,
-                page_body=page_body or "", provider=img_provider)
-            extra_gen += extra
-            # 文字质检：OCR 对撞分页文案，扭曲图自动重生成（文字扭曲是最高频客诉）
-            r, text_extra, gate_cost = await _text_quality_gate(
+        if settings.mock_image_gen:
+            return r, 0, 0.0
+        page_body = page_list[i - 1].body if i - 1 < len(page_list) else ""
+        r, extra = await _dedupe_and_validate(
+            r, prompts[i - 1], refs_i, input_data["task_id"], i, seen_hashes,
+            page_body=page_body or "", provider=img_provider)
+        # 文字质检：OCR 对撞分页文案，扭曲图自动重生成（文字扭曲是最高频客诉）
+        r, text_extra, gate_cost = await _text_quality_gate(
+            r, prompts[i - 1], refs_i, input_data["task_id"], i,
+            page_body or "", seen_hashes, provider=img_provider)
+        extra += text_extra
+        # VL 视觉二审（借鉴 8003）：查 OCR 发现不了的文字过载/实景嵌入不协调。
+        # 省成本口径与 8003 一致：有实图的页（compare/single/通用带图）全审，
+        # 纯 AI 页只审文字关卡已经出过问题的页
+        if settings.vl_review_enabled and (reference_urls or text_extra > 0):
+            r, vl_extra, vl_cost = await _vl_quality_gate(
                 r, prompts[i - 1], refs_i, input_data["task_id"], i,
-                page_body or "", seen_hashes, provider=img_provider)
-            extra_gen += text_extra
+                page_body or "", seen_hashes, ref_mode=bool(refs_i),
+                provider=img_provider)
+            extra += vl_extra
+            gate_cost += vl_cost
+        return r, extra, gate_cost
+
+    parallel = max(1, settings.image_gen_parallel)
+    if parallel > 1 and not settings.mock_image_gen:
+        sem = asyncio.Semaphore(parallel)
+
+        async def _guarded(i: int) -> tuple:
+            async with sem:
+                return await _gen_one_page(i)
+
+        page_results = await asyncio.gather(*(_guarded(i) for i in range(1, 7)))
+        for r, extra, gate_cost in page_results:
+            results.append(r)
+            extra_gen += extra
             ocr_gate_cost += gate_cost
-        results.append(r)
-        await asyncio.sleep(settings.image_gen_delay_seconds)
+    else:
+        for i in range(1, 7):
+            r, extra, gate_cost = await _gen_one_page(i)
+            results.append(r)
+            extra_gen += extra
+            ocr_gate_cost += gate_cost
+            await asyncio.sleep(settings.image_gen_delay_seconds)
     async with SessionLocal() as session:
         for r in results:
             session.add(Asset(**r))
