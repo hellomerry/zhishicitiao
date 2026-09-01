@@ -116,9 +116,11 @@ def test_image_prompt_text_presentation_not_in_notext_mode():
 
 
 def test_image_prompt_dark_box_limit_present():
-    # 全局约束：深色底文字框全套最多 1 次
+    # 全局约束：深色（近黑/深灰）底文字框全套最多 1 次；
+    # 主题色彩色胶囊标签为推荐形式、豁免不计入（2026-09-01 人工样例修正）
     p = get_image_prompt("general", "文案")
-    assert "深色底文字框最多出现1次" in p
+    assert "深色（近黑/深灰）底文字框最多出现1次" in p
+    assert "彩色胶囊" in p and "不算深色框" in p
 
 
 # ---- 通用模式实景图（2026-09-01）：has_refs 切换 general 前缀两版 ----
