@@ -2,7 +2,7 @@
 
 - LLM mock：从用户风格库中选出最贴合的风格
 - LLM 失败/结果不在库中 → 关键词命中评分兜底
-- 用户库为空 → 回退内置 8 风格
+- 用户库为空 → 回退内置 10 风格
 - style_desc_for 反查：用户库优先，内置兜底，未知返回 None
 """
 import pytest
@@ -99,7 +99,8 @@ async def test_disabled_entries_not_in_candidates():
 async def test_style_desc_for_lookup_order():
     await _add_style("科技蓝调", "", "用户库描述词")
     assert await style_desc_for("科技蓝调") == "用户库描述词"      # 用户库优先
-    assert await style_desc_for("治愈暖彩") == IMAGE_STYLE_LIBRARY[0][1]  # 内置兜底
+    assert await style_desc_for("治愈暖彩") == next(
+        d for n, d, _ in IMAGE_STYLE_LIBRARY if n == "治愈暖彩")  # 内置兜底
     assert await style_desc_for("不存在") is None
     assert await style_desc_for("") is None
     assert await style_desc_for(None) is None
@@ -141,7 +142,8 @@ async def test_default_style_short_circuits_llm():
         await session.commit()
     # llm_call 直接抛错也能返回 → 证明未走 LLM；描述词来自内置库
     name, desc = await pick_image_style("任意", "", owner_id=uid, llm_call=_llm_raising)
-    assert name == "治愈暖彩" and desc == IMAGE_STYLE_LIBRARY[0][1]
+    assert name == "治愈暖彩" and desc == next(
+        d for n, d, _ in IMAGE_STYLE_LIBRARY if n == "治愈暖彩")
 
 
 @pytest.mark.asyncio

@@ -199,8 +199,9 @@ const TasksView = {
         src: a.display_url || a.image_url,
         title: `P${a.page_index} · ${a.version_no > 1 ? `修正版 第${a.version_no}版` : '初版'}`,
         text: this.pageCopyOf(a.page_index),
-        // 弹窗内驳回标记（2026-08-31）：仅修正模式下、仅正式版交付配图可标记
-        markKey: this.fixMode ? this.fixKey('image', a.page_index) : null,
+        // 弹窗内驳回标记：终态任务（可自助修正）的正式版交付配图点开大图即可
+        // 直接标记——看到问题先标，标记时自动开启修正模式，不必先找「标记修正」开关
+        markKey: this.canFix ? this.fixKey('image', a.page_index) : null,
         marked: this.isFixMarked('image', a.page_index),
         reason: (this.fixMarks[this.fixKey('image', a.page_index)] || {}).reason || '',
       }));
@@ -315,6 +316,9 @@ const TasksView = {
       this.zoomOpen = true;
     },
     onLbToggleMark(item) {
+      // 弹窗里首次标记时自动开启修正模式：下方的「提交修正」面板随之出现，
+      // 形成「看图→标记→填说明→提交」的完整闭环
+      if (!this.fixMode) this.fixMode = true;
       const [type, p] = item.markKey.split(':');
       this.toggleFixMark(type, Number(p));
     },
