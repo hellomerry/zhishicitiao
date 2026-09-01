@@ -44,16 +44,27 @@ async def _make_task(mode="single", query="空气炸锅 测评"):
 
 
 @pytest.mark.asyncio
-async def test_entity_bind_skips_search_for_general():
+async def test_entity_bind_searches_for_general():
+    """通用模式也搜实景图（2026-09-01 通用启用实景图）：整词搜索，与 single 同策略。"""
     tid = await _make_task(mode="general", query="通用内容")
-    with patch("src.gateway.image_search.search_image") as mock_search:
+    cands = _candidates(6, None)
+
+    async def fetch(url, timeout=60):
+        n = int(url.rsplit("/", 1)[1].split(".")[0])
+        return _png_bytes(1200, 1600, (n * 20 % 255, 30, 30)), "image/png"
+
+    with patch("src.gateway.image_search.search_image",
+               new=AsyncMock(return_value=cands)) as mock_search, \
+         patch("src.pipeline.nodes.fetch_image_bytes", new=fetch):
         out = await node_entity_bind({"task_id": tid})
-    assert out["searched_images"] == 0
-    mock_search.assert_not_called()
+    mock_search.assert_called()
+    args, kwargs = mock_search.call_args
+    assert args[0].endswith(" 高清") and kwargs["count"] == 25
+    assert out["searched_images"] == 6   # 6 张全达标（内容各异，不被 md5 排重）
     async with SessionLocal() as session:
         cnt = (await session.execute(
             select(func.count()).select_from(Asset).where(Asset.task_id == tid))).scalar_one()
-        assert cnt == 0
+        assert cnt == 6
 
 
 @pytest.mark.asyncio
@@ -455,3 +466,96 @@ async def test_download_quality_refs_concurrent_dedupe():
     assert len(refs) == 1      # 仅 1 张 distinct 达标图
     assert refs[0]["url"].startswith("/static/generated/")
     assert filtered == 1       # 小图被质量过滤
+
+
+# ---------- 素材库复用（2026-09-01 通用启用实景图配套） ----------
+
+
+def _lib_asset(task_id, i, hash_, query="空气炸锅 测评", subject=None,
+               image_url=None):
+    return Asset(task_id=task_id, page_index=i,
+                 subject=subject if subject is not None else query,
+                 source_type="official", copyright_status="unknown",
+                 hash=hash_, image_url=image_url or f"/static/generated/{hash_}.png",
+                 origin_url=f"http://origin.test/{hash_}.png",
+                 model_version="bing", search_query=f"{query} 高清",
+                 is_illustration=False)
+
+
+@pytest.mark.asyncio
+async def test_library_match_keyword_and_exclusions():
+    """素材库匹配：关键词双向包含命中；本任务/不相关/死链/同 hash 重复的排除。"""
+    from src.pipeline.nodes import _match_library_assets
+    old = await _make_task(mode="single", query="空气炸锅 测评")
+    new = await _make_task(mode="general", query="空气炸锅 测评")
+    async with SessionLocal() as session:
+        session.add(_lib_asset(old, 1, "h1"))
+        session.add(_lib_asset(old, 2, "h2"))
+        session.add(_lib_asset(old, 3, "h1"))            # 同 hash 重复 → 只取一张
+        session.add(_lib_asset(old, 4, "h3", query="破壁机"))  # 不相关
+        session.add(_lib_asset(new, 5, "h4"))            # 本任务素材 → 排除
+        await session.commit()
+    async with SessionLocal() as session:
+        with patch("src.pipeline.nodes._library_file_ok",
+                   side_effect=lambda url: "h2" not in url):  # h2 文件已删 → 死链
+            hits = await _match_library_assets(session, new, "空气炸锅 测评")
+    assert {h.hash for h in hits} == {"h1"}
+
+
+@pytest.mark.asyncio
+async def test_entity_bind_reuses_library_and_skips_search():
+    """复用 ≥ 保底 6 张：直接挂载到本任务并跳过搜索（省 API），model_version=library。"""
+    old = await _make_task(mode="single", query="空气炸锅 测评")
+    async with SessionLocal() as session:
+        for i in range(7):
+            session.add(_lib_asset(old, i + 1, f"h{i}"))
+        await session.commit()
+    new = await _make_task(mode="general", query="空气炸锅 测评")
+    with patch("src.pipeline.nodes._library_file_ok", return_value=True), \
+         patch("src.gateway.image_search.search_image",
+               new=AsyncMock(return_value=[])) as mock_search:
+        out = await node_entity_bind({"task_id": new})
+    assert out["ref_reused"] == 7
+    assert out["searched_images"] == 7
+    mock_search.assert_not_called()
+    async with SessionLocal() as session:
+        assets = (await session.execute(
+            select(Asset).where(Asset.task_id == new))).scalars().all()
+    assert len(assets) == 7
+    assert all(a.model_version == "library" for a in assets)
+    # 复用行保留原图的本地路径与溯源地址（共享磁盘文件，不重复下载）
+    assert all(a.image_url.startswith("/static/generated/") for a in assets)
+    assert all(a.origin_url and a.origin_url.startswith("http://origin.test/")
+               for a in assets)
+
+
+@pytest.mark.asyncio
+async def test_entity_bind_library_short_then_searches():
+    """复用不足 6 张：复用的挂载 + 照常搜索补齐，同 hash 不再重复收进。"""
+    old = await _make_task(mode="single", query="空气炸锅 测评")
+    async with SessionLocal() as session:
+        for i in range(2):
+            session.add(_lib_asset(old, i + 1, f"h{i}"))
+        await session.commit()
+    new = await _make_task(mode="general", query="空气炸锅 测评")
+    cands = _candidates(8, None)  # 偶大奇小 → 4 张达标
+
+    async def fetch(url, timeout=60):
+        n = int(url.rsplit("/", 1)[1].split(".")[0])
+        if n % 2 == 0:
+            return _png_bytes(1200, 1600, (n * 20 % 255, 30, 30)), "image/png"
+        return _SMALL, "image/png"
+
+    with patch("src.pipeline.nodes._library_file_ok", return_value=True), \
+         patch("src.gateway.image_search.search_image",
+               new=AsyncMock(return_value=cands)) as mock_search, \
+         patch("src.pipeline.nodes.fetch_image_bytes", new=fetch):
+        out = await node_entity_bind({"task_id": new})
+    assert out["ref_reused"] == 2
+    mock_search.assert_called()
+    assert out["searched_images"] == 2 + 6  # 2 复用 + 4 达标 + 2 次优保底
+    async with SessionLocal() as session:
+        assets = (await session.execute(
+            select(Asset).where(Asset.task_id == new)
+            .order_by(Asset.page_index))).scalars().all()
+    assert [a.model_version for a in assets[:2]] == ["library", "library"]

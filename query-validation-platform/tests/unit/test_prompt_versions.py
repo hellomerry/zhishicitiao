@@ -119,3 +119,35 @@ def test_image_prompt_dark_box_limit_present():
     # 全局约束：深色底文字框全套最多 1 次
     p = get_image_prompt("general", "文案")
     assert "深色底文字框最多出现1次" in p
+
+
+# ---- 通用模式实景图（2026-09-01）：has_refs 切换 general 前缀两版 ----
+
+def test_image_prompt_general_with_refs_swaps_prefix():
+    p = get_image_prompt("general", "文案", has_refs=True)
+    assert "将提供的参考实景图融入画面" in p
+    assert "纯 AI 生成" not in p
+    # 无实图回退纯 AI 版
+    p2 = get_image_prompt("general", "文案")
+    assert "纯 AI 生成、无参考图" in p2
+
+
+def test_image_prompt_general_with_refs_notext_mode():
+    p = get_image_prompt("general", "文案", no_text=True, has_refs=True)
+    assert "将提供的参考实景图融入画面" in p
+    assert "纯 AI 生成" not in p
+    p2 = get_image_prompt("general", "文案", no_text=True)
+    assert "纯 AI 生成、无参考图" in p2
+
+
+def test_image_prompt_general_custom_template_not_forced():
+    # 自定义模板不含无参考图前缀时不强行注入
+    p = get_image_prompt("general", "文案", template="自定义模板 {page_body}",
+                         has_refs=True)
+    assert "将提供的参考实景图融入画面" not in p
+
+
+def test_image_prompt_other_modes_unaffected_by_has_refs():
+    # compare/single 模板本就含参考图措辞，has_refs 不改变它们
+    assert "参考实景图" in get_image_prompt("compare", "文案", has_refs=True)
+    assert "参考实景图" in get_image_prompt("single", "文案", has_refs=False)

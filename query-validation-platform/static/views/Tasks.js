@@ -345,7 +345,7 @@ const TasksView = {
     async startGen() {
       if (!this.detailTask) return;
       // 实图保底 6 张（2026-08-27）：不足时提示先重搜/上传补足，不强制拦截
-      const warn = (this.detailTask.mode !== 'general' && this.refAssets.length < 6)
+      const warn = (this.refAssets.length < 6)
         ? `⚠ 当前参考图仅 ${this.refAssets.length} 张（少于 6 张），建议先「重搜/上传参考图」补足。\n\n` : '';
       const modelName = this.imageProvider === 'gemini' ? 'Gemini 3 Pro Image' : 'gpt-image-2（默认）';
       if (!confirm(warn + `确认正文、分页文案与参考图无误，使用「${modelName}」开始生图？\n\n生图是最贵步骤（每任务 6 张）。确认前可先重搜/上传/删除参考图；放行后自动完成生图、OCR、校验并进入审核。`)) return;
@@ -530,7 +530,7 @@ const TasksView = {
               </select>
               <span class="muted" style="font-size:12px">默认 gpt-image-2；手动选择其它模型仅对本任务生效</span>
             </p>
-            <p v-if="detailTask.mode !== 'general' && refAssets.length < 6" style="margin:6px 0 0;color:#c00">⚠ 参考图仅 {{ refAssets.length }} 张（少于保底 6 张），建议先「重搜/上传参考图」补足再生图。</p>
+            <p v-if="refAssets.length < 6" style="margin:6px 0 0;color:#c00">⚠ 参考图仅 {{ refAssets.length }} 张（少于保底 6 张），建议先「重搜/上传参考图」补足再生图。</p>
           </div>
 
           <div v-if="fixMode" class="card" style="margin:12px 0;border:1px solid #f59e0b">

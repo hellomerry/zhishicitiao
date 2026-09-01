@@ -92,8 +92,23 @@ _TEXT_PRESENTATIONS = [
     "本页文字呈现形式：居中无框深色大标题加充足留白，小字紧随其后，全页不出现任何底框。",
 ]
 
+# 通用模式前缀两版（2026-09-01 通用启用实景图）：任务有 official 实图（搜索/
+# 手动上传/素材库复用）时 asset_gen 传 has_refs=True，把「纯 AI 生成、无参考图」
+# 替换为实景图融入条款；无实图回退纯 AI。自定义模板不含该句时不强行注入
+# （与 style_desc/page_subject 注入同一模式）。有字/无字两版文案须同步修改。
+GENERAL_NOREF_PREFIX = "通用科普/教程配图，纯 AI 生成、无参考图。"
+GENERAL_REF_PREFIX = (
+    "通用科普/教程配图，将提供的参考实景图融入画面：去水印、去人物、"
+    "实景图不重复、每页实景图不宜过多以免杂乱；不删减参考图上的文字，"
+    "也不额外添加其他图片。")
+GENERAL_NOREF_PREFIX_NOTEXT = "通用科普/教程配图插画，纯 AI 生成、无参考图。"
+GENERAL_REF_PREFIX_NOTEXT = (
+    "通用科普/教程配图插画，将提供的参考实景图融入画面：去水印、去人物、"
+    "去掉参考图上的一切文字、实景图不重复、每页实景图不宜过多以免杂乱；"
+    "不额外添加其他图片。")
+
 IMAGE_PROMPTS = {
-    "general": "通用科普/教程配图，纯 AI 生成、无参考图。" + _SHARED_IMAGE_STYLE + "【本页必须出现在图中的文字，逐字准确呈现】：{page_body}",
+    "general": GENERAL_NOREF_PREFIX + _SHARED_IMAGE_STYLE + "【本页必须出现在图中的文字，逐字准确呈现】：{page_body}",
     "single": "单品评测配图，将提供的参考实景图融入画面：去水印、去人物、实景图不重复、每页实景图不宜过多以免杂乱；不删减参考图上的文字，也不额外添加其他图片。" + _SHARED_IMAGE_STYLE + "【本页必须出现在图中的文字，逐字准确呈现】：{page_body}",
     "compare": "对比类配图。硬性要求：每页必须在同一画面中同时呈现两个主体做对比（左右分栏或上下对比构图，参考图顺序不能乱：主体A的参考图在前、主体B的在后），展示同一维度下两者的差异；不同页聚焦不同角度（整体外观、正面、侧面、局部细节、使用场景）。将两个主体的参考实景图融入画面：去水印、去人物、实景图不重复。" + _SHARED_IMAGE_STYLE + "【本页必须出现在图中的文字，逐字准确呈现】：{page_body}",
 }
@@ -104,7 +119,7 @@ IMAGE_PROMPTS = {
 # 一一对应，改动时必须两边同步。自定义模板（提示词库）都含文字要求、与此模式
 # 冲突，故本模式固定使用内置模板。
 _MODE_PREFIX_NOTEXT = {
-    "general": "通用科普/教程配图插画，纯 AI 生成、无参考图。",
+    "general": GENERAL_NOREF_PREFIX_NOTEXT,
     "single": "单品评测配图插画，将提供的参考实景图融入画面：去水印、去人物、去掉参考图上的一切文字、实景图不重复、每页实景图不宜过多以免杂乱；不额外添加其他图片。",
     "compare": "对比类配图插画。硬性要求：每页必须在同一画面中同时呈现两个主体做对比（左右分栏或上下对比构图，参考图顺序不能乱：主体A的参考图在前、主体B的在后），展示同一维度下两者的差异；不同页聚焦不同角度（整体外观、正面、侧面、局部细节、使用场景）。将两个主体的参考实景图融入画面：去水印、去人物、去掉参考图上的一切文字、实景图不重复。",
 }
@@ -173,9 +188,22 @@ def _apply_page_subject(prompt: str, page_subject: str = None) -> str:
     return prompt
 
 
+def _apply_general_refs(prompt: str, has_refs: bool, no_text: bool) -> str:
+    """通用模式有实图时把无参考图前缀替换为实景图融入条款（2026-09-01）。
+    其它 mode 模板本就含参考图措辞无需处理；自定义模板不含该句时不强行注入。"""
+    if not has_refs:
+        return prompt
+    noref = GENERAL_NOREF_PREFIX_NOTEXT if no_text else GENERAL_NOREF_PREFIX
+    ref = GENERAL_REF_PREFIX_NOTEXT if no_text else GENERAL_REF_PREFIX
+    if noref in prompt:
+        prompt = prompt.replace(noref, ref)
+    return prompt
+
+
 def get_image_prompt(mode: str, page_body: str, page_index: int = None,
                      template: str = None, no_text: bool = False,
-                     style_desc: str = None, page_subject: str = None) -> str:
+                     style_desc: str = None, page_subject: str = None,
+                     has_refs: bool = False) -> str:
     if no_text:
         # 文字后期合成模式：AI 只画无字背景并预留文字区（固定内置模板，
         # 自定义模板都含文字要求、与此模式冲突）
@@ -184,7 +212,8 @@ def get_image_prompt(mode: str, page_body: str, page_index: int = None,
         if page_index:
             prompt += _PAGE_LAYOUTS_NOTEXT[(page_index - 1) % len(_PAGE_LAYOUTS_NOTEXT)]
         prompt = _apply_style_desc(prompt, style_desc)
-        return _apply_page_subject(prompt, page_subject)
+        prompt = _apply_page_subject(prompt, page_subject)
+        return _apply_general_refs(prompt, has_refs, True)
     # template：用户自定义生图提示词（替代系统模板），排版轮换仍由代码追加
     template = template or IMAGE_PROMPTS.get(mode, IMAGE_PROMPTS["general"])
     prompt = template.replace("{page_body}", page_body)
@@ -193,7 +222,8 @@ def get_image_prompt(mode: str, page_body: str, page_index: int = None,
         prompt += _PAGE_LAYOUTS[(page_index - 1) % len(_PAGE_LAYOUTS)]
         prompt += _TEXT_PRESENTATIONS[(page_index - 1) % len(_TEXT_PRESENTATIONS)]
     prompt = _apply_style_desc(prompt, style_desc)
-    return _apply_page_subject(prompt, page_subject)
+    prompt = _apply_page_subject(prompt, page_subject)
+    return _apply_general_refs(prompt, has_refs, False)
 
 
 # 分页文案：由 LLM 把整篇正文改写成 6 页图上文案（替代旧的机械切割，2026-08-20）

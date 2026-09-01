@@ -1,4 +1,5 @@
 import hashlib
+import re
 import traceback
 import uuid
 from datetime import datetime, timezone
@@ -281,8 +282,61 @@ _RESCUE_COUNT = 12        # 补搜每轮抓取数
 _REF_MIN_KEEP = 6         # 每主体实图保底张数
 
 
+# ── 素材库复用（2026-09-01 通用启用实景图配套）────────────────────
+# 历史任务沉淀的 official 实图就是本地素材库：搜图前先按关键词匹配库中素材，
+# 命中直接挂载到本任务（共享磁盘文件与内容 hash，免重复下载、省搜索 API）。
+# 匹配口径：query 与素材的搜索词/主体标签规范化（剥搜索修饰词与空白）后
+# 双向包含；文件必须还在磁盘（回收站彻底删除会清文件，死链不复用）。
+# 库中图都是公网资源、不含任务隐私，全局共享复用。
+_LIBRARY_STRIP = re.compile(r"(高清|细节|侧面|实拍|外观|场景|（补搜）)")
+_LIBRARY_MAX_ROWS = 500    # 库扫描上限（最近收录优先）
+_LIBRARY_LIMIT = 12        # 单任务最多复用张数
+
+
+def _library_norm(s: str) -> str:
+    return re.sub(r"\s+", "", _LIBRARY_STRIP.sub("", s or ""))
+
+
+def _library_file_ok(image_url: str) -> bool:
+    url = image_url or ""
+    if not url.startswith("/static/"):
+        return False
+    local = Path(__file__).resolve().parent.parent.parent / url.lstrip("/")
+    return local.exists()
+
+
+async def _match_library_assets(session, task_id, query, limit=_LIBRARY_LIMIT):
+    """按 query 关键词匹配素材库（排除本任务的 official 实图），最近收录优先，
+    同内容 hash 只取一张。"""
+    from src.models.assets import Asset
+    key = _library_norm(query)
+    if len(key) < 2:
+        return []
+    rows = (await session.execute(
+        select(Asset).where(Asset.source_type == "official",
+                            Asset.is_illustration == False,
+                            Asset.task_id != task_id,
+                            Asset.image_url.isnot(None))
+        .order_by(Asset.created_at.desc())
+        .limit(_LIBRARY_MAX_ROWS))).scalars().all()
+    hits, seen_hashes = [], set()
+    for a in rows:
+        cand = _library_norm((a.search_query or "") + " " + (a.subject or ""))
+        if len(cand) < 2 or not (key in cand or cand in key):
+            continue
+        if not _library_file_ok(a.image_url):
+            continue
+        if a.hash in seen_hashes:
+            continue
+        seen_hashes.add(a.hash)
+        hits.append(a)
+        if len(hits) >= limit:
+            break
+    return hits
+
+
 async def node_entity_bind(input_data: dict) -> dict:
-    """搜实景图/实物图，存为 official 素材（compare/single 作参考图；general 跳过）。
+    """搜实景图/实物图，存为 official 素材（compare/single/general 有实图都作生图参考）。
 
     质量策略：搜索词带「高清」提高源头质量；下载后只按最低分辨率过滤 + 排重，
     达标的全部保留不设上限（2026-08-27 用户要求，mock 模式不下载不过滤不补搜，
@@ -300,10 +354,10 @@ async def node_entity_bind(input_data: dict) -> dict:
             select(Task).where(Task.id == input_data["task_id"]))).scalar_one()
         query = task.query
         mode = task.mode or "general"
-    if mode == "general":
-        return {"searched_images": 0}
     # compare 模式拆主体 A/B 分搜（各带整体图 + 细节/侧面图，覆盖多角度对比），
-    # 拆不出来时退回整词搜索（旧行为）；single 模式整词搜。
+    # 拆不出来时退回整词搜索（旧行为）；single/general 模式整词搜
+    # （2026-09-01 通用启用实景图：相关性靠质量过滤+补搜+素材库兜底，
+    # 一张没搜到时 asset_gen 自动回退纯 AI 生成）。
     # units：[(主体名, [(tag, 搜索词, 抓取数)])]——补搜按主体（unit）跟踪张数
     if mode == "compare":
         pair = await _split_compare_subjects(query)
@@ -322,6 +376,34 @@ async def node_entity_bind(input_data: dict) -> dict:
     saved = 0
     # 跨搜索组共享排重集合：同一张实图不会被不同搜索词重复收进
     seen = {"hashes": set(), "urls": set()}
+    # 素材库复用：历史任务沉淀的 official 实图按关键词匹配直接挂载（共享磁盘
+    # 文件与 hash，免下载）；复用达保底张数则跳过搜索省 API，不足照常搜索补齐。
+    # mock 模式跳过（与不下载/不过滤/不补搜一致，保留旧行为）
+    reused = 0
+    if not settings.mock_image_gen:
+        async with SessionLocal() as session:
+            hits = await _match_library_assets(session, input_data["task_id"], query)
+            for a in hits:
+                saved += 1
+                reused += 1
+                session.add(Asset(
+                    task_id=input_data["task_id"], page_index=saved,
+                    subject=a.subject or query, source_type="official",
+                    copyright_status=a.copyright_status or "unknown",
+                    hash=a.hash, image_url=a.image_url, origin_url=a.origin_url,
+                    model_version="library",
+                    search_query=a.search_query or query,
+                    is_illustration=False))
+                if a.hash:
+                    seen["hashes"].add(a.hash)
+                for u in (a.image_url, a.origin_url):
+                    if u:
+                        seen["urls"].add(u)
+            await session.commit()
+    if reused >= _REF_MIN_KEEP:
+        return {"searched_images": saved, "ref_reused": reused,
+                "ref_filtered": 0, "ref_dupes": 0, "ref_rescoped": 0,
+                "subjects": list(pair) if pair else [], "cost_cny": 0.0}
     async with SessionLocal() as session:
         for name, groups in units:
             unit_kept = 0
@@ -388,7 +470,8 @@ async def node_entity_bind(input_data: dict) -> dict:
                 unit_kept += len(refs)
             rescoped_total += rescoped
         await session.commit()
-    return {"searched_images": saved, "ref_filtered": filtered_total,
+    return {"searched_images": saved, "ref_reused": reused,
+            "ref_filtered": filtered_total,
             "ref_dupes": dupes_total, "ref_rescoped": rescoped_total,
             "subjects": list(pair) if pair else [],
             "cost_cny": settings.openserp_cost_per_call * search_calls}
@@ -767,20 +850,21 @@ async def node_asset_gen(input_data: dict) -> dict:
         page_list = pages.scalars().all()
         reference_urls = None
         pool_a = pool_b = common = None
-        if mode in ("compare", "single"):
-            refs = await session.execute(
-                select(Asset).where(Asset.task_id == input_data["task_id"],
-                                    Asset.source_type == "official",
-                                    Asset.is_illustration == False))
-            ref_assets = [a for a in refs.scalars() if a.image_url]
-            reference_urls = [a.image_url for a in ref_assets]
-            # compare 分主体参考图池（2026-08-25 反馈③④：每页双主体同框 + 多角度轮换）
-            pool_a = [a.image_url for a in ref_assets
-                      if (a.subject or "").startswith("A:")]
-            pool_b = [a.image_url for a in ref_assets
-                      if (a.subject or "").startswith("B:")]
-            common = [a.image_url for a in ref_assets
-                      if not (a.subject or "").startswith(("A:", "B:"))]
+        # 所有模式都取 official 实图作生图参考（2026-09-01 通用启用实景图）：
+        # 有实图（搜索/手动上传/素材库复用）就融入画面，没有则回退纯 AI 生成
+        refs = await session.execute(
+            select(Asset).where(Asset.task_id == input_data["task_id"],
+                                Asset.source_type == "official",
+                                Asset.is_illustration == False))
+        ref_assets = [a for a in refs.scalars() if a.image_url]
+        reference_urls = [a.image_url for a in ref_assets]
+        # compare 分主体参考图池（2026-08-25 反馈③④：每页双主体同框 + 多角度轮换）
+        pool_a = [a.image_url for a in ref_assets
+                  if (a.subject or "").startswith("A:")]
+        pool_b = [a.image_url for a in ref_assets
+                  if (a.subject or "").startswith("B:")]
+        common = [a.image_url for a in ref_assets
+                  if not (a.subject or "").startswith(("A:", "B:"))]
 
     def _page_refs(page_i: int):
         """每页参考图路由：compare 拆出 A/B 池时每页喂 A、B 各 2 张（按页码轮换，
@@ -855,24 +939,28 @@ async def node_asset_gen(input_data: dict) -> dict:
     # 自定义生图模板（提示词库启用的）替代系统模板；排版轮换仍由代码追加
     image_template = await get_effective_prompt("image_gen", mode, owner_id)
     no_text = settings.text_composite_enabled
+    # 通用模式有实图时提示词前缀换「实景图融入」版（无实图回退纯 AI 版）
+    general_has_refs = (mode == "general" and bool(reference_urls))
     prompts = [get_image_prompt(mode, p.body or "", i, template=image_template,
                                 no_text=no_text, style_desc=style_desc,
                                 page_subject=(page_subjects[i - 1]
-                                              if page_subjects and i <= 6 else None))
+                                              if page_subjects and i <= 6 else None),
+                                has_refs=general_has_refs)
                for i, p in enumerate(page_list, start=1)]
     while len(prompts) < 6:
         prompts.append(get_image_prompt(mode, "", len(prompts) + 1,
                                         template=image_template, no_text=no_text,
                                         style_desc=style_desc,
                                         page_subject=(page_subjects[len(prompts)]
-                                                      if page_subjects else None)))
+                                                      if page_subjects else None),
+                                        has_refs=general_has_refs))
     # 串行 + 间隔生成：避免测试账户限流，保证每张图有足够处理时间
     results = []
     seen_hashes = set()
     extra_gen = 0
     ocr_gate_cost = 0.0
     for i in range(1, 7):
-        refs_i = _page_refs(i) if mode in ("compare", "single") else None
+        refs_i = _page_refs(i) if reference_urls else None
         r = await _generate_single_asset(
             input_data["task_id"], i, prompts[i - 1], refs_i,
             provider=img_provider)
