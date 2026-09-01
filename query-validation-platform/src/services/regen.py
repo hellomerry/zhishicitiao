@@ -246,12 +246,13 @@ async def partial_regen(task_id) -> dict:
             ).scalars().all()
             seen_hashes = {h for h in kept if h}
             reference_urls = None
-            if mode in ("compare", "single"):
-                refs = (await session.execute(
-                    select(Asset.image_url).where(
-                        Asset.task_id == task_id, Asset.source_type == "official",
-                        Asset.is_illustration == False))).scalars().all()
-                reference_urls = [u for u in refs if u]
+            # 与 node_asset_gen 口径一致（2026-09-01）：有 official 实图就作参考，
+            # 不再按 mode 判断（通用模式实图/手动上传在定点重生成同样生效）
+            refs = (await session.execute(
+                select(Asset.image_url).where(
+                    Asset.task_id == task_id, Asset.source_type == "official",
+                    Asset.is_illustration == False))).scalars().all()
+            reference_urls = [u for u in refs if u] or None
             page_rows = (await session.execute(
                 select(PageCopy).where(PageCopy.task_id == task_id,
                                        PageCopy.page_index.in_(images_to_regen))

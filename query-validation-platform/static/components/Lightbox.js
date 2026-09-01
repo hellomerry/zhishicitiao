@@ -4,12 +4,15 @@
 // ⛶ 按钮调用浏览器 Fullscreen API 进入真全屏
 // 驳回标记（2026-08-31）：list 项带 markKey 时显示「标问题」条——看大图发现
 // 细节问题可直接标记并填问题说明，emit toggle-mark / mark-reason 由父视图落状态
-// 用法：<img-lightbox :img="zoom" @close="..." @toggle-mark="..." @mark-reason="..." />
-// zoom = {src, title, text}（单张）或 {list: [{src,title,text,markKey,marked,reason}...], index: n}（多张）
+// 文案编辑（2026-09-01）：list 项带 editable 时文案区显示「✎ 改文案」——
+// 保存时 emit save-text（payload 带 done 回调，父视图落库成功后才退出编辑态）
+// 用法：<img-lightbox :img="zoom" @close="..." @toggle-mark="..." @mark-reason="..." @save-text="..." />
+// zoom = {src, title, text}（单张）或 {list: [{src,title,text,markKey,marked,reason,editable}...], index: n}（多张）
 const ImgLightbox = {
   props: { img: { type: Object, default: null } },
-  emits: ['close', 'toggle-mark', 'mark-reason'],
-  data() { return { idx: 0, scale: 0, natW: 0, natH: 0, drag: null }; },  // scale=0 表示适应屏幕
+  emits: ['close', 'toggle-mark', 'mark-reason', 'save-text'],
+  data() { return { idx: 0, scale: 0, natW: 0, natH: 0, drag: null,
+                    editing: false, editText: '' }; },  // scale=0 表示适应屏幕
   computed: {
     list() {
       if (!this.img) return [];
@@ -28,6 +31,7 @@ const ImgLightbox = {
     },
   },
   watch: {
+    idx() { this.editing = false; },  // 翻页时退出编辑态，防止把甲页文案存到乙页
     img(v, old) {
       // 列表签名：标记状态/说明文字变化不改变签名——避免父视图响应式重建
       // zoom（如在弹窗里填问题说明）时误重置翻页位置与缩放
@@ -77,6 +81,14 @@ const ImgLightbox = {
       st.scrollTop = this.drag.t - (e.clientY - this.drag.y);
     },
     endDrag() { this.drag = null; },
+    startEdit() { this.editText = this.cur.text || ''; this.editing = true; },
+    saveEdit() {
+      const t = (this.editText || '').trim();
+      if (!t) return;
+      // done 回调由父视图在落库后调用：成功才退出编辑态，失败保留内容继续改
+      this.$emit('save-text', { item: this.cur, text: t,
+                                done: ok => { if (ok) this.editing = false; } });
+    },
     async toggleFs() {
       try {
         if (document.fullscreenElement) await document.exitFullscreen();
@@ -112,7 +124,21 @@ const ImgLightbox = {
       <img class="lb-img" :src="cur.src" :key="cur.src" :style="imgStyle"
            @load="onLoad" draggable="false" alt="">
     </div>
-    <div v-if="cur.text" class="lb-caption"><p>{{ cur.text }}</p></div>
+    <div v-if="cur.text || cur.editable" class="lb-caption">
+      <template v-if="!editing">
+        <p>{{ cur.text }}</p>
+        <button v-if="cur.editable" class="lb-editbtn" title="直接修改本页分页文案"
+                @click="startEdit">✎ 改文案</button>
+      </template>
+      <template v-else>
+        <textarea v-model="editText" class="lb-editarea" rows="3" maxlength="200"
+                  placeholder="修改本页分页文案（保存后该页配图将按新文案重新生成）"></textarea>
+        <div class="lb-editops">
+          <button @click="editing = false">取消</button>
+          <button class="primary" @click="saveEdit">保存文案</button>
+        </div>
+      </template>
+    </div>
     <div v-if="cur.markKey" class="lb-markbar">
       <button class="lb-markbtn" :class="{on: cur.marked}"
               @click="$emit('toggle-mark', cur)">

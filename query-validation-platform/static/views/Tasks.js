@@ -202,6 +202,9 @@ const TasksView = {
         // 弹窗内驳回标记：终态任务（可自助修正）的正式版交付配图点开大图即可
         // 直接标记——看到问题先标，标记时自动开启修正模式，不必先找「标记修正」开关
         markKey: this.canFix ? this.fixKey('image', a.page_index) : null,
+        // 弹窗内文案编辑（2026-09-01）：终态任务可直接改分页文案，
+        // 保存后该页自动标记重新配图
+        editable: this.canFix, page_index: a.page_index,
         marked: this.isFixMarked('image', a.page_index),
         reason: (this.fixMarks[this.fixKey('image', a.page_index)] || {}).reason || '',
       }));
@@ -325,6 +328,25 @@ const TasksView = {
     onLbMarkReason({ markKey, reason }) {
       const m = this.fixMarks[markKey];
       if (m) this.fixMarks = { ...this.fixMarks, [markKey]: { ...m, reason } };
+    },
+    async onLbSaveText({ item, text, done }) {
+      // 弹窗内保存分页文案（2026-09-01）：落库 → 本地同步 → 自动标记该页
+      // 重新配图（图文一致性靠 fix 定点重生成保证），统一在修正面板提交后生效
+      try {
+        await api.post(`/api/tasks/${this.detailTask.id}/page_copy`,
+                       { actor: this.actorName, page_index: item.page_index, body: text });
+      } catch (e) { alert('保存失败：' + e.message); done(false); return; }
+      const pcs = (this.detail.page_copies || []).map(p =>
+        p.page_index === item.page_index ? { ...p, body: text } : p);
+      this.detail = { ...this.detail, page_copies: pcs };
+      const k = this.fixKey('image', item.page_index);
+      if (!this.fixMarks[k]) {
+        this.fixMarks = { ...this.fixMarks,
+          [k]: { item_type: 'image', page_index: item.page_index,
+                 reason: '文案已手动修改，按新文案重新配图' } };
+      }
+      this.fixMode = true;
+      done(true);
     },
     async retry() {
       if (!this.detailTask) return;
@@ -683,7 +705,7 @@ const TasksView = {
         </template>
       </div>
     </div>
-    <img-lightbox :img="zoom" @close="zoomOpen=false" @toggle-mark="onLbToggleMark" @mark-reason="onLbMarkReason" />
+    <img-lightbox :img="zoom" @close="zoomOpen=false" @toggle-mark="onLbToggleMark" @mark-reason="onLbMarkReason" @save-text="onLbSaveText" />
   </app-layout>`,
   created() { this.STATUS = STATUS; this.MODE = MODE; },
 };

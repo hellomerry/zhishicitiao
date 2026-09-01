@@ -342,6 +342,57 @@ class FixIn(BaseModel):
     marks: list[FixMarkIn] = []
 
 
+class PageCopyIn(BaseModel):
+    actor: str = "anonymous"
+    page_index: int       # 1-6
+    body: str
+
+
+@router.post("/api/tasks/{task_id}/page_copy")
+async def edit_page_copy(task_id: str, payload: PageCopyIn):
+    """分页文案手动编辑（2026-09-01）：预览大图时发现文案问题，人直接改，
+    不必让 LLM 按驳回意见重写。仅更新文案本身——配图与新文案的一致性由
+    前端随后走 fix 定点重生成（配图按最新文案重画/重新合成）保证。
+    权限与 fix 一致：属主或 admin，终态任务（review/approved/rejected）。"""
+    from src.models.drafts import PageCopy
+    from src.services.ownership import get_actor, check_owner
+    try:
+        tid = uuid.UUID(task_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid task_id")
+    body = (payload.body or "").strip()
+    if not (1 <= payload.page_index <= 6):
+        raise HTTPException(status_code=400, detail="page_index 必须在 1-6 之间")
+    if not body:
+        raise HTTPException(status_code=400, detail="文案不能为空")
+    if len(body) > 200:
+        raise HTTPException(status_code=400, detail="单页文案不能超过 200 字")
+    async with SessionLocal() as session:
+        uid, role = await get_actor(session, payload.actor)
+        task = (await session.execute(select(Task).where(Task.id == tid))).scalars().first()
+        if not task:
+            raise HTTPException(status_code=404, detail="task not found")
+        check_owner(task, uid, role)
+        if task.status not in ("review", "approved", "rejected"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"当前状态（{task.status}）不可编辑文案：生产中任务请等待产出")
+        row = (await session.execute(
+            select(PageCopy).where(PageCopy.task_id == tid,
+                                   PageCopy.page_index == payload.page_index))
+        ).scalars().first()
+        if row:
+            row.body = body
+        else:
+            session.add(PageCopy(task_id=tid, page_index=payload.page_index,
+                                 body=body, claim_ids=[]))
+        await session.commit()
+    await log_action(payload.actor, "edit_page_copy",
+                     f"手动编辑分页文案 P{payload.page_index}（{len(body)}字）",
+                     task_id=tid)
+    return {"ok": True, "page_index": payload.page_index, "body": body}
+
+
 @router.post("/api/tasks/{task_id}/start_gen")
 async def start_gen(task_id: str, actor: str = "anonymous"):
     """生图确认门放行（2026-08-27）：任务跑到 page_split 后停在 confirm_gen
