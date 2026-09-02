@@ -7,18 +7,19 @@ from src.stream.bus import bus
 NODE_LABEL = {
     "task_import": "任务导入", "entity_bind": "搜实景图", "evidence_build": "证据+交叉验证",
     "draft_gen": "正文生成", "draft_polish": "校稿润色", "rule_check": "规则质检", "page_split": "分页文案",
-    "asset_gen": "配图生成", "ocr_read": "OCR回读", "cross_check": "图文一致性",
+    "art_director": "视觉策划", "asset_gen": "配图生成", "ocr_read": "OCR回读", "cross_check": "图文一致性",
     "risk_classify": "风险分流", "review_queue": "审核队列", "batch_signoff": "批次会签",
     "publish_snapshot": "发布快照",
     # 定点重生成节点（仅用于成本/日志展示，不进流水线步骤条）
     "page_regen": "单页重写", "asset_regen": "定点重生图",
 }
 
-# 流水线步骤条顺序（14 节点；重生成节点不在其中）
+# 流水线步骤条顺序（15 节点；重生成节点不在其中）
 NODE_ORDER = [
     "task_import", "entity_bind", "evidence_build", "draft_gen", "draft_polish",
     "rule_check",
-    "page_split", "asset_gen", "ocr_read", "cross_check", "risk_classify",
+    "page_split", "art_director", "asset_gen", "ocr_read", "cross_check",
+    "risk_classify",
     "review_queue", "batch_signoff", "publish_snapshot",
 ]
 

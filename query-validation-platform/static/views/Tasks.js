@@ -16,6 +16,9 @@ const TasksView = {
       exportJob: null, exportTimer: null,   // 任务式导出进度 {id,status,total,done,detail}
       showExport: false,     // 导出弹窗开关（关闭不中断后台打包）
       zoomOpen: false, zoomIndex: 0, // 图片放大浏览（computed zoom 组装，随标记状态响应式刷新）
+      plan: null, planLoading: false,      // 视觉策划方案（confirm_gen 展示，2026-09-02）
+      planEditing: 0, planDraft: {},       // 正在编辑的方案页码 + 草稿字段
+      replanFeedback: '', replanning: false,  // 重新策划意见与提交态
     };
   },
   computed: {
@@ -135,12 +138,62 @@ const TasksView = {
     async open(t) {
       this.detailError = ''; this.detail = null;
       this.fixMode = false; this.fixMarks = {}; this.fixing = false;
+      this.plan = null; this.planEditing = 0; this.replanFeedback = '';
       try {
         this.detail = await api.get(`/api/tasks/${t.id}/detail?actor=` + encodeURIComponent(this.actorName));
         // 任务级生图模型（2026-08-28）：NULL/缺省 = 默认 gpt-image-2
         this.imageProvider = (this.detail.task && this.detail.task.image_provider) || 'openai_images';
+        // 视觉策划方案（2026-09-02）：待生图确认环节加载方案卡片
+        if (this.detailTask && this.detailTask.status === 'confirm_gen') this.loadPlan();
       }
       catch (e) { this.detailError = e.message; }
+    },
+    // ---------- 视觉策划方案（2026-09-02 反模板化） ----------
+    async loadPlan() {
+      if (!this.detailTask) return;
+      this.planLoading = true;
+      try {
+        const r = await api.get(`/api/tasks/${this.detailTask.id}/plan?actor=` + encodeURIComponent(this.actorName));
+        this.plan = r.plan;
+      } catch (e) { this.plan = null; }
+      finally { this.planLoading = false; }
+    },
+    // 色块示意图：文字区位置（与合成落版/策划一致），灰块=文字区，底色=画面区
+    planZoneStyle(zone) {
+      const base = 'position:absolute;left:10%;width:80%;background:rgba(110,100,85,0.5);border-radius:3px;';
+      if (zone === 'top') return base + 'top:6%;height:36%;';
+      if (zone === 'middle' || zone === 'center') return base + 'top:32%;height:36%;';
+      return base + 'bottom:6%;height:36%;';
+    },
+    startEditPlan(p) {
+      this.planEditing = p.page;
+      this.planDraft = { composition: p.composition, text_form: p.text_form,
+                         palette: p.palette, elements: p.elements, focus: p.focus };
+    },
+    async savePlanPage() {
+      if (!this.plan || !this.planEditing) return;
+      const pages = this.plan.pages.map(p => p.page === this.planEditing
+        ? { ...p, ...this.planDraft } : p);
+      this.replanning = true;
+      try {
+        const r = await api.put(`/api/tasks/${this.detailTask.id}/plan`,
+          { actor: this.actorName, plan: { pages } });
+        this.plan = r.plan; this.planEditing = 0;
+      } catch (e) { alert('保存方案失败：' + e.message); }
+      finally { this.replanning = false; }
+    },
+    async replanPlan() {
+      if (!this.detailTask) return;
+      const fb = this.replanFeedback.trim();
+      if (!confirm(fb ? `按意见「${fb.slice(0, 30)}」重新策划 6 页方案？`
+                      : '不带意见整体重新策划 6 页方案？')) return;
+      this.replanning = true;
+      try {
+        const r = await api.post(`/api/tasks/${this.detailTask.id}/replan`,
+          { actor: this.actorName, feedback: fb });
+        this.plan = r.plan; this.replanFeedback = ''; this.planEditing = 0;
+      } catch (e) { alert('重新策划失败：' + e.message); }
+      finally { this.replanning = false; }
     },
     async saveImageModel() {
       if (!this.detailTask) return;
@@ -557,6 +610,51 @@ const TasksView = {
               <span class="muted" style="font-size:12px">默认 gpt-image-2；手动选择其它模型仅对本任务生效</span>
             </p>
             <p v-if="refAssets.length < 6" style="margin:6px 0 0;color:#c00">⚠ 参考图仅 {{ refAssets.length }} 张（少于保底 6 张），建议先「重搜/上传参考图」补足再生图。</p>
+          </div>
+
+          <div v-if="canStartGen" class="card" style="margin:12px 0">
+            <p style="margin:0 0 8px"><b>视觉策划方案</b> <span class="tag tag-green" v-if="plan && plan.style">{{ plan.style }}</span><br>
+              <span class="muted" style="font-size:13px">AI 视觉总监为 6 页各出的创意方案（灰色块=文字区示意）。生图将按方案执行；可单页「编辑」，或写意见「重新策划」。</span></p>
+            <p v-if="planLoading" class="muted" style="margin:6px 0">方案加载中…</p>
+            <template v-else-if="plan && plan.pages && plan.pages.length">
+              <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px;margin:8px 0">
+                <div v-for="p in plan.pages" :key="p.page" style="display:flex;gap:10px;border:1px solid var(--border);border-radius:8px;padding:8px;background:var(--card)">
+                  <div style="position:relative;width:66px;height:88px;border-radius:4px;overflow:hidden;background:linear-gradient(160deg,#efe9db,#e2d9c6);flex:none" :title="'文字区位置：' + ({top:'顶部',middle:'中部',center:'中部',bottom:'底部'}[p.title_zone] || '底部')">
+                    <div :style="planZoneStyle(p.title_zone)"></div>
+                  </div>
+                  <div style="flex:1;font-size:12px;line-height:1.6;min-width:0">
+                    <b>P{{ p.page }}<template v-if="p.focus"> · {{ p.focus }}</template></b>
+                    <div class="muted">构图：{{ p.composition }}</div>
+                    <div class="muted">文字：{{ p.text_form || '—' }}</div>
+                    <div class="muted">色调：{{ p.palette || '—' }}　元素：{{ p.elements || '—' }}</div>
+                    <a href="javascript:;" style="color:#06c" @click="startEditPlan(p)">✎ 编辑本页</a>
+                  </div>
+                </div>
+              </div>
+              <div v-if="planEditing" style="border:1px solid var(--primary);border-radius:8px;padding:10px;margin:8px 0">
+                <b style="font-size:13px">编辑 P{{ planEditing }} 方案</b>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px;font-size:12px">
+                  <label style="grid-column:1/3">构图版式（必填）<textarea v-model="planDraft.composition" rows="2" style="width:100%"></textarea></label>
+                  <label>文字载体<textarea v-model="planDraft.text_form" rows="2" style="width:100%"></textarea></label>
+                  <label>视觉元素<textarea v-model="planDraft.elements" rows="2" style="width:100%"></textarea></label>
+                  <label>色调<input v-model="planDraft.palette" style="width:100%"></label>
+                  <label>信息焦点（必填）<input v-model="planDraft.focus" style="width:100%"></label>
+                </div>
+                <div style="margin-top:6px;display:flex;gap:8px">
+                  <button class="btn btn-primary btn-sm" :disabled="replanning" @click="savePlanPage">保存本页</button>
+                  <button class="btn btn-outline btn-sm" @click="planEditing = 0">取消</button>
+                </div>
+              </div>
+              <div style="display:flex;gap:8px;align-items:center;margin-top:4px">
+                <input v-model="replanFeedback" placeholder="修改意见（可空）：如「封面太挤，第3页换成对比构图」" style="flex:1">
+                <button class="btn btn-outline btn-sm" :disabled="replanning" @click="replanPlan">{{ replanning ? '策划中…' : '↻ 重新策划' }}</button>
+              </div>
+            </template>
+            <p v-else class="muted" style="margin:6px 0">未生成策划方案（策划失败不影响出图，将按系统默认排版生图）。也可点「↻ 重新策划」重试：
+              <span style="display:inline-flex;gap:8px;align-items:center;margin-left:6px">
+                <input v-model="replanFeedback" placeholder="修改意见（可空）" style="width:260px">
+                <button class="btn btn-outline btn-sm" :disabled="replanning" @click="replanPlan">{{ replanning ? '策划中…' : '↻ 重新策划' }}</button>
+              </span></p>
           </div>
 
           <div v-if="fixMode" class="card" style="margin:12px 0;border:1px solid #f59e0b">

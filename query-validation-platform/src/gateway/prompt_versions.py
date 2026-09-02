@@ -219,10 +219,49 @@ def _apply_general_refs(prompt: str, has_refs: bool, no_text: bool) -> str:
     return prompt
 
 
+def _apply_plan(prompt: str, plan_page: dict = None, no_text: bool = False) -> str:
+    """视觉策划方案注入（2026-09-02 反模板化）：art_director 为本页出的创意
+    brief 替代/补充固定轮换。无字合成模式的文字留白区由代码槽位固定（与
+    text_composite 合成落版对齐），方案只指导画面创意、严禁侵占留白区；
+    有字版方案完整接管构图与文字载体（调用方不再追加 _PAGE_LAYOUTS 轮换）。"""
+    if not plan_page:
+        return prompt
+    comp = (plan_page.get("composition") or "").strip()
+    form = (plan_page.get("text_form") or "").strip()
+    palette = (plan_page.get("palette") or "").strip()
+    elements = (plan_page.get("elements") or "").strip()
+    focus = (plan_page.get("focus") or "").strip()
+    if no_text:
+        parts = []
+        if comp:
+            parts.append(f"构图：{comp}")
+        if palette:
+            parts.append(f"色调：{palette}")
+        if elements:
+            parts.append(f"视觉元素：{elements}")
+        if not parts:
+            return prompt
+        return (prompt + "本页画面创意（必须严格保留上文要求的文字留白区，"
+                "留白区内保持干净、简洁、低细节）：" + "；".join(parts) + "；")
+    frag = "本页创意方案（本页排版按此方案执行）："
+    if comp:
+        frag += f"构图版式：{comp}；"
+    if form:
+        frag += f"文字呈现形式：{form}；"
+    if palette:
+        frag += f"色调：{palette}；"
+    if elements:
+        frag += f"视觉元素：{elements}；"
+    if focus:
+        frag += f"信息焦点：{focus}；"
+    return prompt + frag + "注意仍需遵守全套排版纪律：本页排版不得与其它页雷同。"
+
+
 def get_image_prompt(mode: str, page_body: str, page_index: int = None,
                      template: str = None, no_text: bool = False,
                      style_desc: str = None, page_subject: str = None,
-                     has_refs: bool = False, layout_offset: int = 0) -> str:
+                     has_refs: bool = False, layout_offset: int = 0,
+                     plan_page: dict = None) -> str:
     # layout_offset（2026-09-02 反同质化）：分页布局/文字形式轮换的起点按任务
     # 偏移——此前每个任务的第 N 页永远用第 N 种布局（页位同构，套与套摆一起
     # 一眼模板感）；偏移后每套图 6 页仍各不同，但页位映射随任务变化。
@@ -237,11 +276,16 @@ def get_image_prompt(mode: str, page_body: str, page_index: int = None,
                                            % len(_PAGE_LAYOUTS_NOTEXT)]
         prompt = _apply_style_desc(prompt, style_desc)
         prompt = _apply_page_subject(prompt, page_subject)
+        # 策划方案只指导画面创意，文字留白区仍按代码槽位（合成落版对齐）
+        prompt = _apply_plan(prompt, plan_page, no_text=True)
         return _apply_general_refs(prompt, has_refs, True)
     # template：用户自定义生图提示词（替代系统模板），排版轮换仍由代码追加
     template = template or IMAGE_PROMPTS.get(mode, IMAGE_PROMPTS["general"])
     prompt = template.replace("{page_body}", page_body)
-    if page_index:
+    if plan_page:
+        # 策划方案接管本页构图与文字载体（替代固定轮换，反模板化）
+        prompt = _apply_plan(prompt, plan_page, no_text=False)
+    elif page_index:
         # 追加本页专属排版指令 + 文字呈现形式，让 6 页构图与文字载体都错开
         prompt += _PAGE_LAYOUTS[(page_index - 1 + layout_offset) % len(_PAGE_LAYOUTS)]
         prompt += _TEXT_PRESENTATIONS[(page_index - 1 + layout_offset)

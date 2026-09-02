@@ -11,7 +11,7 @@ const SettingsView = {
       // 样例图学习风格草稿（2026-09-02）：VL 提炼后填入下方表单，用户确认再保存
       styleLearnLoading: false, styleLearnMsg: '',
       // 我的风格偏好统计 + 个人默认风格（使用中学习，2026-08-28）
-      styleStats: [], styleDefault: null,
+      styleStats: [], styleDefault: null, styleRandom: false,
       // 密码
       old_password: '', new_password: '', confirm: '', pwError: '', pwMsg: '', savingPw: false,
       // 提示词库
@@ -64,7 +64,17 @@ const SettingsView = {
       try {
         const r = await api.get('/api/styles/stats?actor=' + encodeURIComponent(this.user.name));
         this.styleStats = r.items || []; this.styleDefault = r.default_style || null;
+        this.styleRandom = !!r.style_random;
       } catch (e) { /* 静默 */ }
+    },
+    // 随机风格模式开关（2026-09-02，迁移 018）：不想挑风格时开启，每条任务
+    // 随机选一种风格、批量篇篇不同；钉选的默认风格仍优先
+    async toggleStyleRandom() {
+      try {
+        const on = !this.styleRandom;
+        await api.post('/api/styles/random_mode', { actor: this.user.name, enabled: on });
+        this.styleRandom = on;
+      } catch (e) { alert('设置失败：' + e.message); }
     },
     editStyle(r) { this.styleForm = { ...r, public: r.scope === 'public' }; },
     async saveStyle() {
@@ -318,6 +328,9 @@ const SettingsView = {
     <template v-if="tab==='styles'">
     <div class="card">
       <h2>我的风格偏好 <span class="muted" style="font-weight:normal;font-size:13px">按历史任务自动统计；钉选默认风格后生图直接使用、跳过自动判定</span></h2>
+      <p style="margin:4px 0 0;font-size:13px">🎲 随机风格模式：<b :style="{color: styleRandom ? 'var(--primary)' : 'inherit'}">{{ styleRandom ? '已开启' : '已关闭' }}</b>
+        <button class="btn btn-outline btn-sm" style="margin:0 8px" @click="toggleStyleRandom">{{ styleRandom ? '关闭' : '开启' }}</button>
+        <span class="muted">不想挑风格时开启：每条任务随机选一种风格，批量任务篇篇不同；钉选的默认风格仍优先</span></p>
       <div v-if="styleSuggestion" class="card" style="margin:10px 0;border:1px solid #f59e0b">
         <p style="margin:0">你似乎偏好「{{ styleSuggestion.style_name }}」（{{ styleSuggestion.total }} 个任务，通过率 {{ fmtRate(styleSuggestion.approval_rate) }}）
           <button class="btn btn-primary btn-sm" style="margin-left:8px" @click="setDefaultStyle(styleSuggestion.style_name)">设为默认</button>

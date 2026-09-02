@@ -1,5 +1,6 @@
-"""生图前人工确认门（2026-08-27）：pipeline 跑到 page_split 停（confirm_gen），
-人工确认后 start_gen 以 gen_resume 续跑全链（已完成节点幂等跳过）。"""
+"""生图前人工确认门（2026-08-27）：pipeline 跑到视觉策划停（confirm_gen），
+人工确认后 start_gen 以 gen_resume 续跑全链（已完成节点幂等跳过）。
+2026-09-02 起停点从 page_split 后移到 art_director——策划方案在确认环节展示。"""
 import uuid
 
 import pytest
@@ -66,7 +67,7 @@ async def _status(task_id):
 
 @pytest.mark.asyncio
 async def test_pipeline_stops_at_gate_with_content_ready():
-    """pipeline（导入路径）跑到 page_split 停：状态 confirm_gen，
+    """pipeline（导入路径）跑到 art_director 停：状态 confirm_gen，
     分页文案就绪、AI 配图未生成（asset_gen 未执行）。"""
     task = await _mk_task()
     with patch("src.pipeline.nodes.call_with_failover", return_value=FAKE_DRAFT):

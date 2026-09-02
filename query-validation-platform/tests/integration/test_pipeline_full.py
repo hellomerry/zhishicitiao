@@ -14,7 +14,7 @@ FAKE_DRAFT = {
 
 
 @pytest.mark.asyncio
-async def test_full_pipeline_all_13_nodes():
+async def test_full_pipeline_all_15_nodes():
     async with SessionLocal() as session:
         task = Task(idempotency_key=f"full-{uuid.uuid4().hex[:8]}", query="测试", content_type="x")
         session.add(task)
@@ -23,4 +23,4 @@ async def test_full_pipeline_all_13_nodes():
         task_id = task.id
     with patch("src.pipeline.nodes.call_with_failover", return_value=FAKE_DRAFT):
         results = await run_pipeline(task_id)
-    assert len(results) == 14
+    assert len(results) == 15

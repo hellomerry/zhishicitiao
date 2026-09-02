@@ -253,8 +253,8 @@ async def style_stats(actor: str):
             " GROUP BY t.gen_image_style"),
             {"u": uid})).all())
         default = (await session.execute(
-            text("SELECT default_style FROM users WHERE id = :u"),
-            {"u": uid})).scalar()
+            text("SELECT default_style, style_random FROM users WHERE id = :u"),
+            {"u": uid})).first()
     items = []
     for style, total, approved, rejected in rows:
         reviewed = approved + rejected
@@ -264,7 +264,30 @@ async def style_stats(actor: str):
             "approval_rate": round(approved / reviewed, 4) if reviewed else None,
             "regen_count": int(regen.get(style, 0)),
         })
-    return {"items": items, "default_style": default}
+    return {"items": items,
+            "default_style": default[0] if default else None,
+            "style_random": bool(default[1]) if default else False}
+
+
+class RandomModeIn(BaseModel):
+    actor: str
+    enabled: bool
+
+
+@router.post("/api/styles/random_mode")
+async def set_random_mode(payload: RandomModeIn):
+    """随机风格模式开关（2026-09-02，迁移 018）：开启后每条任务随机选一种风格
+    （个人库→公共库→内置库），适合不想挑风格的用户批量出图且篇篇不同；
+    钉选的个人默认风格仍然优先（显式选择永远优先）。"""
+    async with SessionLocal() as session:
+        uid, _ = await _actor(session, payload.actor)
+        await session.execute(
+            text("UPDATE users SET style_random = :e WHERE id = :u"),
+            {"e": payload.enabled, "u": uid})
+        await session.commit()
+    await log_action(payload.actor, "style_kb",
+                     f"{'开启' if payload.enabled else '关闭'}随机风格模式")
+    return {"ok": True, "style_random": payload.enabled}
 
 
 class DefaultStyleIn(BaseModel):
@@ -304,16 +327,20 @@ async def list_templates():
 
 @router.get("/api/styles/onboarding_state")
 async def onboarding_state(actor: str = ""):
-    """是否需要风格开局引导：个人库为空且未钉默认风格 → true（新用户首次进入）。"""
+    """是否需要风格开局引导：个人库为空且未钉默认风格且未开随机模式 → true
+    （开了随机模式的用户不需要挑模板，2026-09-02 迁移 018）。"""
     async with SessionLocal() as session:
         uid, _ = await _actor(session, actor)
         mine = (await session.execute(
             select(StyleKeyword).where(StyleKeyword.owner_id == uid))).scalars().all()
-        default = (await session.execute(
-            text("SELECT default_style FROM users WHERE id = :u"),
-            {"u": uid})).scalar()
-    return {"needs_onboarding": not mine and not default,
-            "default_style": default, "mine_count": len(mine)}
+        row = (await session.execute(
+            text("SELECT default_style, style_random FROM users WHERE id = :u"),
+            {"u": uid})).first()
+    default = row[0] if row else None
+    rand = bool(row[1]) if row else False
+    return {"needs_onboarding": not mine and not default and not rand,
+            "default_style": default, "style_random": rand,
+            "mine_count": len(mine)}
 
 
 class CloneTemplatesIn(BaseModel):

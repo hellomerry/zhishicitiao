@@ -68,6 +68,7 @@ window.api = {
   },
   get(url) { return this._req('GET', url); },
   post(url, body) { return this._req('POST', url, body || {}); },
+  put(url, body) { return this._req('PUT', url, body || {}); },
   postForm(url, formData) { return this._req('POST', url, undefined, formData); },
   del(url) { return this._req('DELETE', url); },
 };

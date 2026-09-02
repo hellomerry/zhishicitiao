@@ -184,9 +184,11 @@ class TaskScheduler:
             await run_pipeline(task_id)
             await self._mark_status(task_id, "review")
         elif settings.image_gen_confirm_gate:
-            # 生图前人工确认门（2026-08-27）：先跑找图+生文，停在 page_split
-            # 等人工确认（status=confirm_gen），确认后以 gen_resume 续跑生图
-            await run_pipeline(task_id, stop_after="page_split")
+            # 生图前人工确认门（2026-08-27）：先跑找图+生文+分页+视觉策划，
+            # 停在 art_director（2026-09-02 起停点从 page_split 后移——策划方案
+            # 在确认环节一并展示），等人工确认（status=confirm_gen）后以
+            # gen_resume 续跑生图
+            await run_pipeline(task_id, stop_after="art_director")
             await self._mark_status(task_id, "confirm_gen")
         else:
             await run_pipeline(task_id)

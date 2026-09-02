@@ -161,6 +161,11 @@ async def partial_regen(task_id) -> dict:
         gen_style = task.gen_image_style
         # 风格描述快照（迁移 015）：冻结在任务上的描述词优先于库中现行描述
         style_desc_snap = task.gen_image_style_desc
+        # 视觉策划方案（迁移 017）：定点重生成沿用冻结方案，重出页与整套一致
+        plan_pages = None
+        if task.plan_json and isinstance(task.plan_json, dict):
+            plan_pages = {p.get("page"): p
+                          for p in (task.plan_json.get("pages") or [])}
         marks = await get_open_marks(session, task_id)
         rounds, _ = await get_rejection_feedback(session, task_id)
     if not marks:
@@ -273,7 +278,8 @@ async def partial_regen(task_id) -> dict:
                                       page_subject=(page_subjects[p - 1]
                                                     if page_subjects and p <= 6
                                                     else None),
-                                      layout_offset=layout_offset)
+                                      layout_offset=layout_offset,
+                                      plan_page=(plan_pages or {}).get(p))
             fb = image_reasons.get(p, []) + page_reasons.get(p, [])
             if fb:
                 prompt += ("\n\n【审核意见】该页上一版本被人工审核驳回："

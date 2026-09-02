@@ -33,6 +33,10 @@ class Task(Base):
     # 分页画面主体（2026-08-31，迁移 014）：asset_gen 从 6 页分页文案 LLM 提取
     # 的每页画面主体（JSON 数组），注入生图提示词用；NULL=未提取/提取失败
     page_subjects = Column(JSONB)
+    # 视觉策划方案（2026-09-02，迁移 017）：art_director 为 6 页各出一份创意
+    # brief（JSON：pages 数组 + model/created_at），confirm_gen 环节人工确认/
+    # 编辑/重策划；注入生图提示词替代固定构图/文字形式轮换。NULL=未策划/失败
+    plan_json = Column(JSONB)
     # 回收站（2026-08-26）：status="trashed" 时记录原状态/时间/操作人，恢复用
     prev_status = Column(Text)
     trashed_at = Column(TIMESTAMP(timezone=True))

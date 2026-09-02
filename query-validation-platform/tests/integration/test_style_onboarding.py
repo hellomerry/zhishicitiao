@@ -259,3 +259,36 @@ async def test_style_variants_field_roundtrip():
             "variants": ""})
         items = (await c.get(f"/api/styles?actor={user}")).json()["items"]
         assert [i for i in items if i["scope"] == "mine"][0]["variants"] == ""
+
+
+# ---------- 随机风格模式（2026-09-02，迁移 018）----------
+
+@pytest.mark.asyncio
+async def test_random_mode_endpoint_and_onboarding_excludes():
+    """POST /api/styles/random_mode 开关联动：onboarding_state 对开了随机的
+    用户不再要求开局引导；stats 返回 style_random。"""
+    name, uid = await _make_user()
+    async with _client() as c:
+        # 新用户默认需要引导、未开随机
+        r = await c.get(f"/api/styles/onboarding_state?actor={name}")
+        assert r.json()["needs_onboarding"] is True
+        assert r.json()["style_random"] is False
+        # 开启随机模式
+        r = await c.post("/api/styles/random_mode",
+                         json={"actor": name, "enabled": True})
+        assert r.status_code == 200 and r.json()["style_random"] is True
+        # 开了随机 → 不再需要引导
+        r = await c.get(f"/api/styles/onboarding_state?actor={name}")
+        assert r.json()["needs_onboarding"] is False
+        assert r.json()["style_random"] is True
+        # stats 同步返回开关状态
+        r = await c.get(f"/api/styles/stats?actor={name}")
+        assert r.json()["style_random"] is True
+        # 关闭
+        r = await c.post("/api/styles/random_mode",
+                         json={"actor": name, "enabled": False})
+        assert r.json()["style_random"] is False
+        # 未知用户 → 401
+        r = await c.post("/api/styles/random_mode",
+                         json={"actor": f"ghost-{_uniq()}", "enabled": True})
+        assert r.status_code == 401

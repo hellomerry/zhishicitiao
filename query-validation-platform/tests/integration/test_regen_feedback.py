@@ -64,7 +64,7 @@ async def _reject(task_id, reason=REJECT_REASON):
 
 @pytest.mark.asyncio
 async def test_regen_injects_feedback_and_reruns_all_nodes():
-    """驳回后重跑：14 个节点全部重新执行，草稿提示词含驳回理由，产物不叠加。"""
+    """驳回后重跑：15 个节点全部重新执行，草稿提示词含驳回理由，产物不叠加。"""
     task = await _make_task()
     captured = []
 
@@ -93,7 +93,7 @@ async def test_regen_injects_feedback_and_reruns_all_nodes():
     with patch("src.pipeline.nodes.call_with_failover", side_effect=fake_llm):
         results = await run_pipeline(task.id)
     # 全链重跑：没有任何节点被幂等跳过
-    assert len(results) == 14
+    assert len(results) == 15
     assert not any(r["result"].get("skipped") for r in results)
     # 草稿提示词包含驳回理由
     assert any(REJECT_REASON in p for p in captured)

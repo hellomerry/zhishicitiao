@@ -423,6 +423,122 @@ async def start_gen(task_id: str, actor: str = "anonymous"):
     return {"ok": True, "task_id": str(tid), "status": "draft", "kind": "gen_resume"}
 
 
+# ---------- 视觉策划方案（2026-09-02 反模板化，迁移 017）----------
+
+async def _plan_task(session, task_id: str, actor: str):
+    """方案接口共用的加载+归属校验：返回 (task, uid, role)，异常抛 HTTPException。"""
+    from src.services.ownership import get_actor, check_owner
+    try:
+        tid = uuid.UUID(task_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid task_id")
+    uid, role = await get_actor(session, actor)
+    task = (await session.execute(select(Task).where(Task.id == tid))).scalars().first()
+    if not task:
+        raise HTTPException(status_code=404, detail="task not found")
+    check_owner(task, uid, role)
+    return task, uid, role
+
+
+@router.get("/api/tasks/{task_id}/plan")
+async def get_task_plan(task_id: str, actor: str = "anonymous"):
+    """查看视觉策划方案：confirm_gen（待生图）环节前端展示方案卡片用；
+    未策划/策划失败时 plan 为 null（生图回退固定轮换）。"""
+    async with SessionLocal() as session:
+        task, _, _ = await _plan_task(session, task_id, actor)
+        return {"plan": task.plan_json, "status": task.status,
+                "style": task.gen_image_style}
+
+
+class PlanSaveIn(BaseModel):
+    actor: str
+    plan: dict
+
+
+@router.put("/api/tasks/{task_id}/plan")
+async def save_task_plan(task_id: str, payload: PlanSaveIn):
+    """人工编辑方案保存（仅 confirm_gen 状态）：字段校验/截断与 LLM 方案同一
+    入口（normalize_plan）；文字区位置按代码槽位重算，人工值不生效（防与
+    合成落版错位）。"""
+    from src.services.art_director import normalize_plan, finalize_plan
+    from src.pipeline.nodes import _layout_offset_for
+    plan = normalize_plan(payload.plan)
+    if plan is None:
+        raise HTTPException(status_code=422,
+                            detail="方案格式无效：需恰好 6 页且每页含构图与信息焦点")
+    async with SessionLocal() as session:
+        task, _, _ = await _plan_task(session, task_id, payload.actor)
+        if task.status != "confirm_gen":
+            raise HTTPException(
+                status_code=400,
+                detail=f"当前状态（{task.status}）不可编辑方案：仅「待生图」状态可改")
+        old = task.plan_json if isinstance(task.plan_json, dict) else {}
+        plan["model"] = "human_edit"
+        plan = finalize_plan(
+            plan, style=task.gen_image_style,
+            no_text=bool(old.get("no_text", True)),
+            layout_offset=_layout_offset_for(task.id))
+        task.plan_json = plan
+        tid = task.id
+        await session.commit()
+    await log_action(payload.actor, "edit_plan", "人工编辑视觉策划方案",
+                     task_id=tid)
+    return {"ok": True, "plan": plan}
+
+
+class ReplanIn(BaseModel):
+    actor: str
+    feedback: str = ""
+
+
+@router.post("/api/tasks/{task_id}/replan")
+async def replan_task(task_id: str, payload: ReplanIn):
+    """重新策划（仅 confirm_gen 状态）：按人工意见让 AI 重出方案，已选定的
+    视觉风格与分页文案不变；策划失败返回 502，原方案保留。"""
+    from src.models.assets import Asset
+    from src.models.drafts import PageCopy
+    from src.services.art_director import generate_plan, finalize_plan
+    from src.services.style_pick import style_desc_for
+    from src.pipeline.nodes import _layout_offset_for
+    async with SessionLocal() as session:
+        task, _, _ = await _plan_task(session, task_id, payload.actor)
+        if task.status != "confirm_gen":
+            raise HTTPException(
+                status_code=400,
+                detail=f"当前状态（{task.status}）不可重新策划：仅「待生图」状态可操作")
+        tid, query, mode = task.id, task.query, task.mode or "general"
+        owner_id, style = task.created_by, task.gen_image_style
+        style_desc = task.gen_image_style_desc
+        pages = (await session.execute(
+            select(PageCopy).where(PageCopy.task_id == tid)
+            .order_by(PageCopy.page_index))).scalars().all()
+        refs = await session.execute(
+            select(Asset).where(Asset.task_id == tid,
+                                Asset.source_type == "official",
+                                Asset.is_illustration == False))
+        has_refs = any(a.image_url for a in refs.scalars())
+        no_text = bool((task.plan_json or {}).get("no_text", True)
+                       if isinstance(task.plan_json, dict) else True)
+    if style and not style_desc:
+        style_desc = await style_desc_for(style, owner_id)
+    bodies = [(p.body or "") for p in pages][:6]
+    plan = await generate_plan(query, mode, bodies, style_desc=style_desc,
+                               has_refs=has_refs,
+                               feedback=payload.feedback or None)
+    if not plan:
+        raise HTTPException(status_code=502, detail="重新策划失败，请稍后重试")
+    plan = finalize_plan(plan, style=style, no_text=no_text,
+                         layout_offset=_layout_offset_for(tid))
+    async with SessionLocal() as session:
+        t = (await session.execute(select(Task).where(Task.id == tid))).scalar_one()
+        t.plan_json = plan
+        await session.commit()
+    await log_action(payload.actor, "replan",
+                     f"重新策划：{payload.feedback[:50] or '（无意见，整体重出）'}",
+                     task_id=tid)
+    return {"ok": True, "plan": plan}
+
+
 # 任务级生图模型可选值（2026-08-28）：默认 openai_images（gpt-image-2），
 # 其它模型仅在用户手动选择时生效
 _IMAGE_PROVIDERS = ("openai_images", "gemini")

@@ -56,8 +56,8 @@ def text_similarity(expected: str, actual: str) -> float:
 
 NODES = [
     "task_import", "entity_bind", "evidence_build", "draft_gen",
-    "draft_polish", "rule_check", "page_split", "asset_gen", "ocr_read",
-    "cross_check", "risk_classify", "review_queue",
+    "draft_polish", "rule_check", "page_split", "art_director", "asset_gen",
+    "ocr_read", "cross_check", "risk_classify", "review_queue",
     "batch_signoff", "publish_snapshot"
 ]
 
@@ -731,6 +731,55 @@ async def node_page_split(input_data: dict) -> dict:
             "prompt_version": "page_split_llm_v1", "cost_cny": cost}
 
 
+async def node_art_director(input_data: dict) -> dict:
+    """视觉策划（2026-09-02 反模板化）：page_split 之后、asset_gen 之前为 6 页
+    各出一份创意 brief 落 tasks.plan_json（迁移 017）。风格选定（ensure_task_style）
+    也在此提前完成——方案需要风格描述作输入，asset_gen 直接读快照。策划失败
+    不阻塞：plan_json 保持 NULL，asset_gen 回退固定构图/文字形式轮换。"""
+    from src.models.tasks import Task
+    from src.models.assets import Asset
+    from src.models.drafts import PageCopy
+    from src.services.style_pick import ensure_task_style
+    from src.services.art_director import generate_plan, finalize_plan
+    task_id = input_data["task_id"]
+    async with SessionLocal() as session:
+        task = (await session.execute(
+            select(Task).where(Task.id == task_id))).scalar_one()
+        query, mode, owner_id = task.query, task.mode or "general", task.created_by
+        pages = (await session.execute(
+            select(PageCopy).where(PageCopy.task_id == task_id)
+            .order_by(PageCopy.page_index))).scalars().all()
+        refs = await session.execute(
+            select(Asset).where(Asset.task_id == task_id,
+                                Asset.source_type == "official",
+                                Asset.is_illustration == False))
+        has_refs = any(a.image_url for a in refs.scalars())
+    bodies = [(p.body or "") for p in pages][:6]
+    gen_style, style_desc = await ensure_task_style(task_id, query, owner_id)
+    # 驳回重跑：run_pipeline 把审核反馈注入 inputs，带给策划做定向调整
+    feedback = (input_data.get("regen") or {}).get("feedback") or None
+    if isinstance(feedback, list):
+        feedback = "；".join(str(f) for f in feedback)
+    # llm_call 显式走 nodes 模块级 failover：测试 patch 时策划同样走 mock
+    plan = await generate_plan(query, mode, bodies, style_desc=style_desc,
+                               has_refs=has_refs, feedback=feedback,
+                               llm_call=lambda p: call_with_failover(
+                                   p, DEEPSEEK_MODEL, KIMI_MODEL, max_retries=1))
+    if not plan:
+        return {"planned": False, "style": gen_style, "cost_cny": 0.0}
+    cost = plan.get("cost_cny", 0.0)
+    plan = finalize_plan(plan, style=gen_style,
+                         no_text=settings.text_composite_enabled,
+                         layout_offset=_layout_offset_for(task_id))
+    async with SessionLocal() as session:
+        t = (await session.execute(
+            select(Task).where(Task.id == task_id))).scalar_one()
+        t.plan_json = plan
+        await session.commit()
+    return {"planned": True, "style": gen_style, "cost_cny": cost,
+            "model_version": plan.get("model")}
+
+
 async def _generate_single_asset(task_id, page_index: int, prompt: str,
                                  reference_image_urls=None,
                                  provider: str = None) -> dict:
@@ -892,13 +941,15 @@ async def node_asset_gen(input_data: dict) -> dict:
         mode = task.mode or "general"
         owner_id = task.created_by
         query = task.query
-        gen_style = task.gen_image_style
-        # 风格描述快照（迁移 015）：已选定任务的描述词冻结在任务上，风格库
-        # 后续编辑/删除不改变本任务（含定点重生成）的视觉风格
-        style_desc_snapshot = task.gen_image_style_desc
         # 任务级生图模型（2026-08-28）：NULL=全局默认 gpt-image-2，
         # 用户在「待生图」确认环节手动选择其它模型时才写入（迁移 010）
         img_provider = task.image_provider
+        # 视觉策划方案（2026-09-02，迁移 017）：art_director 节点产出并冻结；
+        # NULL=未策划/策划失败，下方 get_image_prompt 回退固定轮换
+        plan_pages = None
+        if task.plan_json and isinstance(task.plan_json, dict):
+            plan_pages = {p.get("page"): p
+                          for p in (task.plan_json.get("pages") or [])}
         pages = await session.execute(
             select(PageCopy).where(PageCopy.task_id == input_data["task_id"]))
         page_list = pages.scalars().all()
@@ -941,41 +992,11 @@ async def node_asset_gen(input_data: dict) -> dict:
     # 生图视觉风格自适应（2026-08-28，迁移 011）：正文生成后、生图前为任务判定
     # 一次风格（用户风格库优先，空则内置 8 风格），6 张图共用；风格名落
     # tasks.gen_image_style，描述词注入提示词替换固定风格句。判定失败不阻塞
-    # 出图（沿用模板默认风格句）。重跑/续跑时已判定的任务优先用快照描述词
-    # （迁移 015），无快照（015 前老任务）再按名反查库中现行描述。
-    style_desc = None
-    if not gen_style:
-        try:
-            from src.services.style_pick import pick_image_style
-            async with SessionLocal() as session:
-                draft_body = await _latest_draft_body(session, input_data["task_id"])
-            gen_style, style_desc = await pick_image_style(
-                query, draft_body, owner_id=owner_id,
-                llm_call=lambda p: call_with_failover(
-                    p, DEEPSEEK_MODEL, KIMI_MODEL, max_retries=1))
-            # 风格变体轴（2026-09-02 反同质化 #2）：在签名描述词后追加一条按
-            # task_id 采样的变体（强调色/装饰/密度轮换），同一用户同一风格
-            # 每篇产出不重样；随快照冻结，重出图不漂移
-            from src.services.style_pick import variant_for
-            seed = int(hashlib.md5(str(input_data["task_id"]).encode())
-                       .hexdigest(), 16)
-            variant = await variant_for(gen_style, owner_id, seed)
-            if variant:
-                style_desc = (style_desc or "") + variant
-            async with SessionLocal() as session:
-                t = (await session.execute(
-                    select(Task).where(Task.id == input_data["task_id"]))).scalar_one()
-                t.gen_image_style = gen_style
-                t.gen_image_style_desc = style_desc  # 快照（迁移 015）
-                await session.commit()
-        except Exception:
-            traceback.print_exc()
-            gen_style = None
-    if gen_style and style_desc is None:
-        style_desc = style_desc_snapshot
-    if gen_style and style_desc is None:
-        from src.services.style_pick import style_desc_for
-        style_desc = await style_desc_for(gen_style, owner_id)
+    # 出图（沿用模板默认风格句）。2026-09-02 起选定提前到 art_director 节点
+    # （策划需要风格描述作输入），此处直接读快照；015 前老任务无快照按名反查。
+    from src.services.style_pick import ensure_task_style
+    gen_style, style_desc = await ensure_task_style(
+        input_data["task_id"], query, owner_id)
     # 分页画面主体提取（2026-08-31 用户反馈「图文不对应」）：生图前用一次 LLM
     # 从 6 页文案提取每页具体画面主体注入提示词，替换通用主体锚定条款；提取
     # 失败回退 None，不阻塞出图（沿用通用锚定条款）。结果落 tasks.page_subjects
@@ -1011,7 +1032,8 @@ async def node_asset_gen(input_data: dict) -> dict:
                                 page_subject=(page_subjects[i - 1]
                                               if page_subjects and i <= 6 else None),
                                 has_refs=general_has_refs,
-                                layout_offset=layout_offset)
+                                layout_offset=layout_offset,
+                                plan_page=(plan_pages or {}).get(i))
                for i, p in enumerate(page_list, start=1)]
     while len(prompts) < 6:
         prompts.append(get_image_prompt(mode, "", len(prompts) + 1,
@@ -1020,7 +1042,9 @@ async def node_asset_gen(input_data: dict) -> dict:
                                         page_subject=(page_subjects[len(prompts)]
                                                       if page_subjects else None),
                                         has_refs=general_has_refs,
-                                        layout_offset=layout_offset))
+                                        layout_offset=layout_offset,
+                                        plan_page=(plan_pages or {}).get(
+                                            len(prompts) + 1)))
     # 生成策略（2026-09-01 借鉴 8003 并行出图）：image_gen_parallel>1 时 6 页
     # Semaphore 限流并发（去重/校验仍在页内串行，seen_hashes 由 asyncio 单线程
     # 协程共享、无竞态）；=1 保持串行+间隔旧行为（防测试账户限流）

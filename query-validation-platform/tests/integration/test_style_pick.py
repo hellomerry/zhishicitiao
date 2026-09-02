@@ -155,3 +155,45 @@ async def test_style_desc_for_personal_before_public():
     assert await style_desc_for("同名风") == "公共描述"          # 无 owner → 公共
     other_uid, _ = await _make_user()
     assert await style_desc_for("同名风", other_uid) == "公共描述"  # 别人的个人库不可见
+
+
+@pytest.mark.asyncio
+async def test_random_mode_picks_without_llm():
+    """随机风格模式（迁移 018）：开启后每条任务随机选一种，不走 LLM/学习加权。"""
+    uid, _ = await _make_user()
+    async with SessionLocal() as session:
+        await session.execute(text("UPDATE users SET style_random = TRUE WHERE id = :u"),
+                              {"u": uid})
+        await session.commit()
+    # llm_call 直接抛错也能返回 → 证明未走 LLM；结果必在内置库中
+    name, desc = await pick_image_style("任意选题", "", owner_id=uid,
+                                        llm_call=_llm_raising)
+    assert name in _BUILTIN_NAMES
+    assert desc == next(d for n, d, _ in IMAGE_STYLE_LIBRARY if n == name)
+
+
+@pytest.mark.asyncio
+async def test_random_mode_uses_personal_library_when_nonempty():
+    """随机模式候选池顺序：个人库非空 → 从个人库随机（不回退内置）。"""
+    uid, _ = await _make_user()
+    await _add_style("我的专属风", "", "专属描述", owner_id=uid)
+    async with SessionLocal() as session:
+        await session.execute(text("UPDATE users SET style_random = TRUE WHERE id = :u"),
+                              {"u": uid})
+        await session.commit()
+    name, desc = await pick_image_style("任意", "", owner_id=uid,
+                                        llm_call=_llm_raising)
+    assert name == "我的专属风" and desc == "专属描述"
+
+
+@pytest.mark.asyncio
+async def test_default_style_beats_random_mode():
+    """钉选的默认风格优先于随机模式（显式选择永远优先）。"""
+    uid, _ = await _make_user()
+    async with SessionLocal() as session:
+        await session.execute(text(
+            "UPDATE users SET default_style = '杂志编辑', style_random = TRUE"
+            " WHERE id = :u"), {"u": uid})
+        await session.commit()
+    name, _ = await pick_image_style("任意", "", owner_id=uid, llm_call=_llm_raising)
+    assert name == "杂志编辑"

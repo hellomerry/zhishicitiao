@@ -1,6 +1,7 @@
 from src.pipeline.nodes import (
     execute_node, NODES, node_entity_bind, node_evidence_build, node_draft_gen,
-    node_draft_polish, node_rule_check, node_page_split, node_asset_gen, node_ocr_read, node_cross_check,
+    node_draft_polish, node_rule_check, node_page_split, node_art_director,
+    node_asset_gen, node_ocr_read, node_cross_check,
     node_risk_classify, node_review_queue, node_batch_signoff, node_publish_snapshot,
 )
 
@@ -11,6 +12,7 @@ NODE_FN = {
     "draft_polish": node_draft_polish,
     "rule_check": node_rule_check,
     "page_split": node_page_split,
+    "art_director": node_art_director,
     "asset_gen": node_asset_gen,
     "ocr_read": node_ocr_read,
     "cross_check": node_cross_check,
@@ -38,7 +40,7 @@ async def run_pipeline(task_id, node_inputs: dict | None = None,
         r = await execute_node(task_id, node_name, inputs, fn)
         results.append({"node": node_name, "result": r})
         if stop_after and node_name == stop_after:
-            # 生图前人工确认门：跑到 stop_after（page_split）即停，其余节点
+            # 生图前人工确认门：跑到 stop_after（art_director）即停，其余节点
             # 等人工确认后以 gen_resume 续跑（已完成节点幂等跳过）
             break
     return results

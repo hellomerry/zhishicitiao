@@ -190,6 +190,16 @@ async def _default_style(owner_id) -> str | None:
             {"u": owner_id})).scalar()
 
 
+async def _style_random_on(owner_id) -> bool:
+    """创建者是否开了随机风格模式（users.style_random，迁移 018）。"""
+    if owner_id is None:
+        return False
+    async with SessionLocal() as session:
+        return bool((await session.execute(
+            text("SELECT style_random FROM users WHERE id = :u"),
+            {"u": owner_id})).scalar())
+
+
 async def _usage_weights(owner_id) -> tuple:
     """近 20 条任务（滑动窗口）的风格使用统计 → ({style: weight}, 窗口任务数)。
 
@@ -237,6 +247,17 @@ async def pick_image_style(query: str, body: str, owner_id=None, llm_call=None) 
     default = await _default_style(owner_id)
     if default:
         return default, await style_desc_for(default, owner_id)
+    # 优先级 0.5：随机风格模式（2026-09-02，迁移 018）：不想挑风格的用户开启后
+    # 每条任务从可用候选（个人库→公共库→内置库）均匀随机一种，跳过 LLM 与学习
+    # 加权——批量导入的任务风格自然各异；钉选默认风格（优先级 0）仍然优先
+    if await _style_random_on(owner_id):
+        candidates = await _style_candidates(owner_id, public=False) if owner_id else []
+        if not candidates:
+            candidates = await _style_candidates(owner_id, public=True)
+        if not candidates:
+            candidates = list(IMAGE_STYLE_LIBRARY)
+        name, desc, _ = random.choice(candidates)
+        return name, desc
     if llm_call is None:
         from src.gateway.failover import call_with_failover, DEEPSEEK_MODEL, KIMI_MODEL
 
@@ -276,6 +297,56 @@ async def pick_image_style(query: str, body: str, owner_id=None, llm_call=None) 
         traceback.print_exc()  # LLM 失败不阻塞出图，走关键词兜底
     return _keyword_pick(candidates, (query or "") + "\n" + (body or "")[:500],
                          weights=weights)
+
+
+async def ensure_task_style(task_id, query: str, owner_id=None) -> tuple:
+    """确保任务已选定生图风格，返回 (风格名|None, 描述词|None)。
+
+    从 asset_gen 内联块抽出（2026-09-02）：art_director 策划需要风格描述作输入，
+    风格选定从生图前提前到策划节点。已判定的任务（续跑/重跑/生图节点）直接读
+    tasks 上的快照（迁移 015），幂等不重复 LLM；未判定则 LLM 选定 + 变体轴采样
+    （反同质化 #2）并冻结快照。判定失败返回 (None, None)，调用方回退模板默认。
+    """
+    import hashlib
+    from src.models.tasks import Task
+    async with SessionLocal() as session:
+        task = (await session.execute(
+            select(Task).where(Task.id == task_id))).scalar_one()
+        gen_style = task.gen_image_style
+        snapshot = task.gen_image_style_desc
+    style_desc = None
+    if not gen_style:
+        try:
+            # 经 nodes 模块取 failover：测试 patch nodes.call_with_failover 时
+            # 风格选定同样走 mock，保持测试密闭（与 asset_gen/page_subject 同例）
+            from src.pipeline.nodes import (
+                _latest_draft_body, call_with_failover,
+                DEEPSEEK_MODEL, KIMI_MODEL)
+            async with SessionLocal() as session:
+                draft_body = await _latest_draft_body(session, task_id)
+            gen_style, style_desc = await pick_image_style(
+                query, draft_body, owner_id=owner_id,
+                llm_call=lambda p: call_with_failover(
+                    p, DEEPSEEK_MODEL, KIMI_MODEL, max_retries=1))
+            # 风格变体轴：签名描述词后追加一条按 task_id 采样的变体，随快照冻结
+            seed = int(hashlib.md5(str(task_id).encode()).hexdigest(), 16)
+            variant = await variant_for(gen_style, owner_id, seed)
+            if variant:
+                style_desc = (style_desc or "") + variant
+            async with SessionLocal() as session:
+                t = (await session.execute(
+                    select(Task).where(Task.id == task_id))).scalar_one()
+                t.gen_image_style = gen_style
+                t.gen_image_style_desc = style_desc  # 快照（迁移 015）
+                await session.commit()
+        except Exception:
+            traceback.print_exc()
+            gen_style = None
+    if gen_style and style_desc is None:
+        style_desc = snapshot
+    if gen_style and style_desc is None:
+        style_desc = await style_desc_for(gen_style, owner_id)
+    return gen_style, style_desc
 
 
 async def style_desc_for(style_name: str, owner_id=None) -> str | None:
