@@ -286,6 +286,63 @@ async def test_partial_regen_only_touches_marked_items():
 
 
 @pytest.mark.asyncio
+async def test_second_fix_same_page_not_idempotency_skipped():
+    """回归（2026-09-02）：同一页二次修正必须真正重生成。
+    创建者自助修正（fix_task）不产生 ReviewAction，regen_round 不变；
+    幂等键若不含本轮标记 id，asset_regen 会被 execute_node 跳过——
+    标记 resolved 但图根本没重画（线上事故：P6 两次 fix_task 返回 200 却无新图）。"""
+    from src.models.review import RejectMark
+    from src.services.regen import partial_regen
+
+    task = await _make_task()
+
+    async def fake_llm(prompt, *a, **kw):
+        return FAKE_DRAFT
+
+    with patch("src.pipeline.nodes.call_with_failover", side_effect=fake_llm):
+        await run_pipeline(task.id)
+
+    # 第一轮：审核员驳回 P6（产生 ReviewAction）
+    await _reject_with_marks(task.id, [
+        {"item_type": "image", "page_index": 6, "reason": "图上有乱码"}])
+    with patch("src.pipeline.nodes.call_with_failover", side_effect=fake_llm):
+        await partial_regen(task.id)
+    async with SessionLocal() as session:
+        r1_id = (await session.execute(
+            select(Asset.id).where(Asset.task_id == task.id,
+                                   Asset.source_type == "ai_generated",
+                                   Asset.is_active == True,
+                                   Asset.page_index == 6))).scalar_one()
+
+    # 第二轮：创建者修正同页 P6（fix_task 路径：只写 creator 标记，
+    # 不产生 ReviewAction，regen_round 与上一轮相同）
+    async with SessionLocal() as session:
+        session.add(RejectMark(task_id=task.id, role="creator",
+                               item_type="image", page_index=6,
+                               reason="图上狗的形象不对"))
+        await session.commit()
+    with patch("src.pipeline.nodes.call_with_failover", side_effect=fake_llm):
+        result = await partial_regen(task.id)
+
+    assert result["images_regenerated"] == [6]
+    async with SessionLocal() as session:
+        r2_id = (await session.execute(
+            select(Asset.id).where(Asset.task_id == task.id,
+                                   Asset.source_type == "ai_generated",
+                                   Asset.is_active == True,
+                                   Asset.page_index == 6))).scalar_one()
+        assert r2_id != r1_id  # 第二轮真的出了新图，没被幂等跳过
+        ev = (await session.execute(
+            select(func.count()).select_from(NodeEvent).where(
+                NodeEvent.task_id == task.id,
+                NodeEvent.node_name == "asset_regen"))).scalar()
+        assert ev == 2
+        marks = (await session.execute(
+            select(RejectMark).where(RejectMark.task_id == task.id))).scalars().all()
+        assert all(m.status == "resolved" for m in marks)
+
+
+@pytest.mark.asyncio
 async def test_reject_with_marks_auto_enqueues_partial_without_clearing():
     """带标记的驳回：审核动作自动提交 partial_regen（2026-08-27 起无需人工重试），
     不清理已有产物、标记保持 open 等待闭环。"""
@@ -443,3 +500,132 @@ async def test_activate_rejects_ref_and_non_owner():
         assert r.status_code == 400
         r = await ac.post(f"/api/assets/{ai_id}/activate", params={"actor": other})
         assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_partial_regen_follows_legacy_ai_text_set():
+    """套图跟随已定型前图（2026-09-02 用户决策「已定型的风格必须遵从」）。
+
+    保留页是老管线 AI 画字图（model_version 无 |textcmp）时，定点重出页必须：
+    ① AI 只画无字背景（套图一致性条款 + 第一张保留页作风格参照放参考图首位）；
+    ② 文字用「经典彩色药丸」版式程序合成（composite_style="classic_pills"），
+       不再让 AI 画字（实测 AI 画字异体变形点名也修不正确）。
+    """
+    from src.services.regen import partial_regen
+
+    task = await _make_task()
+
+    async def fake_llm(prompt, *a, **kw):
+        return FAKE_DRAFT
+
+    with patch("src.pipeline.nodes.call_with_failover", side_effect=fake_llm):
+        await run_pipeline(task.id)
+
+    # 模拟 08-26 老管线套图：保留页都是 AI 画字图（无 |textcmp 后缀）
+    async with SessionLocal() as session:
+        assets = (await session.execute(
+            select(Asset).where(Asset.task_id == task.id,
+                                Asset.source_type == "ai_generated")
+            .order_by(Asset.page_index))).scalars().all()
+        for a in assets:
+            a.model_version = "gpt-image-2"
+            a.image_url = f"/static/legacy_p{a.page_index}.png"
+        await session.commit()
+
+    gen_calls, dedupe_calls = [], []
+
+    async def fake_gen(task_id, page_index, prompt, reference_image_urls=None,
+                       provider=None):
+        gen_calls.append({"page": page_index, "prompt": prompt,
+                          "refs": reference_image_urls})
+        return {"task_id": task_id, "page_index": page_index, "hash": "h-new",
+                "image_url": f"/static/new_p{page_index}.png",
+                "source_type": "ai_generated", "copyright_status": "clear",
+                "model_version": "gpt-image-2", "is_illustration": False}
+
+    async def fake_dedupe(asset, prompt, reference_urls, task_id, page_index,
+                          seen_hashes, **kw):
+        dedupe_calls.append(kw)
+        return asset, 0
+
+    await _reject_with_marks(task.id, [
+        {"item_type": "image", "page_index": 6,
+         "reason": "文字异体变形，要和已有前图风格保持一致"}])
+
+    with patch("src.pipeline.nodes.call_with_failover", side_effect=fake_llm), \
+            patch("src.pipeline.nodes._generate_single_asset",
+                  side_effect=fake_gen), \
+            patch("src.pipeline.nodes._dedupe_and_validate",
+                  side_effect=fake_dedupe):
+        result = await partial_regen(task.id)
+
+    assert result["images_regenerated"] == [6]
+    assert len(gen_calls) == 1
+    c = gen_calls[0]
+    # ① 套图一致性条款 + 审核意见注入提示词；无字背景（AI 不画字）
+    assert "套图一致性" in c["prompt"]
+    assert "和已有前图风格保持一致" in c["prompt"]
+    assert "不要出现任何文字" in c["prompt"]
+    # ② 风格参照图放参考图首位（第一张保留页 P1）
+    assert c["refs"] and c["refs"][0] == "/static/legacy_p1.png"
+    # ③ 文字走程序合成：经典彩色药丸版式 + 分页文案
+    assert len(dedupe_calls) == 1
+    assert dedupe_calls[0]["composite_style"] == "classic_pills"
+    assert dedupe_calls[0]["page_body"].strip()
+
+
+@pytest.mark.asyncio
+async def test_visual_snapshot_frozen_and_reused_in_regen():
+    """场景化视觉扩写（2026-09-02，迁移 020）：asset_gen 把 6 页文案扩写成英文
+    视觉描述并冻结到 tasks.visual_json；定点重生成沿用快照走英文视觉骨架，
+    不重新扩写（LLM 非确定性会让重出页与整套漂移）。"""
+    from src.services.regen import partial_regen
+
+    task = await _make_task()
+    visual_json = ('{"style_en": "Warm cream base, sage accents.", "pages": ['
+                   + ",".join(f'"scene number {i}"' for i in range(1, 7)) + ']}')
+    expand_calls = []
+
+    async def fake_llm(prompt, *a, **kw):
+        if "visual director" in prompt:
+            expand_calls.append(prompt)
+            return {"text": visual_json, "model_version": "deepseek",
+                    "cost_cny": 0.001, "degraded": False}
+        return FAKE_DRAFT
+
+    with patch("src.pipeline.nodes.call_with_failover", side_effect=fake_llm):
+        await run_pipeline(task.id)
+
+    async with SessionLocal() as session:
+        t = (await session.execute(
+            select(Task).where(Task.id == task.id))).scalar_one()
+        # 产出已冻结
+        assert t.visual_json and t.visual_json["style_en"].startswith("Warm cream")
+        assert len(t.visual_json["pages"]) == 6
+
+    gen_prompts = []
+
+    async def fake_gen(task_id, page_index, prompt, reference_image_urls=None,
+                       provider=None):
+        gen_prompts.append(prompt)
+        return {"task_id": task_id, "page_index": page_index, "hash": "h-new",
+                "image_url": f"/static/new_p{page_index}.png",
+                "source_type": "ai_generated", "copyright_status": "clear",
+                "model_version": "gpt-image-2", "is_illustration": False}
+
+    await _reject_with_marks(task.id, [
+        {"item_type": "image", "page_index": 3, "reason": "画面与主题不符"}])
+
+    expand_calls.clear()
+    with patch("src.pipeline.nodes.call_with_failover", side_effect=fake_llm), \
+            patch("src.pipeline.nodes._generate_single_asset",
+                  side_effect=fake_gen):
+        result = await partial_regen(task.id)
+
+    assert result["images_regenerated"] == [3]
+    # 重出页提示词走英文视觉骨架，且用的是冻结快照里的第 3 页描述
+    assert "VISUAL DIRECTION" in gen_prompts[0]
+    assert "scene number 3" in gen_prompts[0]
+    assert "Warm cream base" in gen_prompts[0]
+    # 定点重生成不重新扩写（沿用冻结值）
+    assert expand_calls == []

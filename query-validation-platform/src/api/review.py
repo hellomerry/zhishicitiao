@@ -113,6 +113,15 @@ async def action(payload: ActionIn):
                 ReviewSession.task_id == tid,
                 ReviewSession.finished_at.is_(None)))
         await session.commit()
+    # 视觉反馈笔记沉淀（2026-09-02，迁移 020）：驳回理由/配图定点标记注入
+    # 后续视觉扩写（笔记池在 visual_notes 表），让画面方向越用越贴合团队口味
+    if payload.action_type == "reject":
+        from src.services.visual_writer import add_visual_note
+        if payload.reason:
+            await add_visual_note(payload.reason, source="review")
+        for m in payload.marks:
+            if m.item_type == "image" and m.reason.strip():
+                await add_visual_note(m.reason.strip(), source="review_mark")
     from src.services.activity import log_action
     label = "通过" if payload.action_type == "approve" else "驳回"
     detail = f"审核{label}（角色 {payload.role}）：{(task.query if task else '')[:50]}"

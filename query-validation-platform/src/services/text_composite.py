@@ -54,13 +54,17 @@ def split_title_body(page_body: str) -> tuple:
 
 
 def composite_page(image_bytes: bytes, page_body: str, page_index: int,
-                   offset: int = 0) -> bytes | None:
+                   offset: int = 0, banned=None, style: str = None) -> bytes | None:
     """把分页文案用真实字体合成到 AI 背景图上，返回 PNG 字节（1152x1536）。
 
     字体缺失/图片解析失败返回 None——调用方保留原图，合成失败不阻塞出图。
     offset（2026-09-02 反同质化）：排版样式/文字区槽位随任务偏移，必须与
     生图提示词 get_image_prompt(layout_offset=...) 传同一值，否则 AI 预留的
-    留白区与合成落版位置错开。"""
+    留白区与合成落版位置错开。
+    banned（2026-09-02 版式禁用）：该页被禁用的槽位集合，与生图提示词
+    get_image_prompt(layout_bans=...) 传同一份（slot_for_page 统一顺延）。
+    style（2026-09-02 老管线套图跟随）：显式指定版式名（如 classic_pills）
+    时跳过槽位轮换，与生图提示词 get_image_prompt(force_slot=...) 配套使用。"""
     paths = _font_paths()
     if paths is None:
         print("[text_composite] 字体缺失（static/fonts/NotoSansSC-*.otf），跳过合成",
@@ -68,12 +72,13 @@ def composite_page(image_bytes: bytes, page_body: str, page_index: int,
         return None
     try:
         from PIL import Image
+        from src.gateway.prompt_versions import slot_for_page
         img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         img = _cover_resize(img)
         title, body = split_title_body(page_body)
         if title or body:
-            slot = ((page_index - 1 + offset) % 6) + 1
-            _draw_text_block(img, title, body, slot)
+            slot = slot_for_page(page_index, offset, banned)
+            _draw_text_block(img, title, body, slot, style=style)
         out = io.BytesIO()
         img.save(out, format="PNG")
         return out.getvalue()
@@ -126,20 +131,20 @@ def _zone_luminance(img, x0: int, y0: int, x1: int, y1: int) -> float:
     return 0.299 * r + 0.587 * g + 0.114 * b
 
 
-# ===== 排版样式（6 页轮换，2026-08-31）=====
-# 文字颜色统一规则：排版区背景亮 → 深色文字；暗 → 白色文字；
-# 有面板的样式面板色随之配套。
+# ===== 排版样式（6 页轮换，2026-08-31；2026-09-02 浅色系化）=====
+# 2026-09-02 用户决策：永久摒弃两类版式——①深底白字（深色面板/深色渐变蒙版+
+# 白字）；②发光字（任何形式的光晕垫底）。全部版式统一为浅色承载+深色文字。
 DARK_TEXT = (26, 26, 26)
 WHITE_TEXT = (255, 255, 255)
 
 # 样式与页码对应表（与 _ZONE_BY_PAGE 的留白区一一对应，调整轮换只改这里）
 _STYLE_BY_PAGE = {
-    1: "gradient_scrim",   # 封面（bottom）：底部渐变蒙版
-    2: "glow_text",        # 要点（top）：无面板文字+柔和外发光
-    3: "light_panel",      # 特写（bottom）：浅色半透明圆角面板
-    4: "magazine_rule",    # 清单（top）：无面板杂志式 大标题+细分隔线
-    5: "capsule_tags",     # 场景（top）：浅色胶囊标签
-    6: "center_adaptive",  # 总结（center）：无面板居中大标题，颜色亮度自适应
+    1: "light_scrim",     # 封面（bottom）：底部浅色渐变蒙版
+    2: "light_banner",    # 要点（top）：浅色通栏横幅
+    3: "light_panel",     # 特写（bottom）：浅色半透明圆角面板
+    4: "magazine_rule",   # 清单（top）：无面板杂志式 大标题+细分隔线
+    5: "capsule_tags",    # 场景（top）：浅色胶囊标签
+    6: "center_capsule",  # 总结（center）：浅色居中胶囊大标题
 }
 
 
@@ -169,26 +174,11 @@ def _fit_text(probe, title: str, body: str, text_w: int, max_h: int,
     return tf, bf, t_lines, b_lines, lh_t, lh_b, gap, text_h
 
 
-def _draw_lines_glow(img, items: list, glow_fill: tuple, radius: int = 8):
-    """给整组文字垫柔和外发光：先把文字画到透明层、一次高斯模糊成均匀晕开的
-    光晕垫底，再画实体文字（不是描边也不是阴影，边缘没有生硬轮廓）。
-    items = [(中心xy, 行文本, 字体, 文字颜色)]，glow_fill 为发光色（RGB）。"""
-    from PIL import Image, ImageDraw, ImageFilter
-    layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    d = ImageDraw.Draw(layer)
-    for xy, line, font, _fill in items:
-        d.text(xy, line, font=font, fill=glow_fill + (230,), anchor="mm")
-    layer = layer.filter(ImageFilter.GaussianBlur(radius))
-    img.paste(Image.alpha_composite(img.convert("RGBA"), layer).convert("RGB"), (0, 0))
-    d = ImageDraw.Draw(img)
-    for xy, line, font, fill in items:
-        d.text(xy, line, font=font, fill=fill, anchor="mm")
-
-
-def _style_gradient_scrim(img, title: str, body: str):
-    """P1 封面（zone=bottom）：底部渐变蒙版——从透明渐变到深色的竖向渐变带
-    （不是圆角矩形），白色大标题+一行副标题，杂志封面式。
-    设计意图：封面要海报感，渐变带压得住任意底图又不像「黑框」那样边界生硬。"""
+def _style_light_scrim(img, title: str, body: str):
+    """P1 封面（zone=bottom）：底部浅色渐变蒙版——从透明渐变到暖米白的竖向
+    渐变带（不是圆角矩形），深色大标题+一行副标题，杂志封面式。
+    设计意图：封面要海报感，渐变带压得住任意底图又不像「黑框」那样边界生硬。
+    2026-09-02 用户决策：永久摒弃深底白字类版式，蒙版由深色改为暖米白。"""
     from PIL import Image, ImageDraw
     W, H = img.size
     margin = 96
@@ -201,44 +191,49 @@ def _style_gradient_scrim(img, title: str, body: str):
     grad = Image.new("RGBA", (1, band_h))
     for yy in range(band_h):
         t = (yy / max(band_h - 1, 1)) ** 1.6  # 缓入，过渡更自然
-        grad.putpixel((0, yy), (10, 10, 14, round(215 * t)))
+        grad.putpixel((0, yy), (250, 247, 240, round(235 * t)))
     base = img.convert("RGBA")
     base.alpha_composite(grad.resize((W, band_h)), (0, band_top))
     img.paste(base.convert("RGB"), (0, 0))
     draw = ImageDraw.Draw(img)
     y = y_text
     for line in t_lines:
-        draw.text((W / 2, y + lh_t / 2), line, font=tf, fill=WHITE_TEXT, anchor="mm")
+        draw.text((W / 2, y + lh_t / 2), line, font=tf, fill=DARK_TEXT, anchor="mm")
         y += lh_t
     y += gap
     for line in b_lines:
-        draw.text((W / 2, y + lh_b / 2), line, font=bf, fill=(235, 235, 235),
+        draw.text((W / 2, y + lh_b / 2), line, font=bf, fill=(60, 58, 54),
                   anchor="mm")
         y += lh_b
 
 
-def _style_glow_text(img, title: str, body: str):
-    """P2 要点页（zone=top）：无面板，文字直接排版在预留留白区；为保证可读性
-    垫一层反向柔和外发光（亮区深字+白光晕，暗区白字+暗光晕）。
-    设计意图：要点页信息量最大，去掉面板让画面通透，光晕只托住文字边缘。"""
-    from PIL import ImageDraw
+def _style_light_banner(img, title: str, body: str):
+    """P2 要点页（zone=top）：浅色通栏横幅——贴图顶、撑满图宽的米白横带
+    （直角、205 透明），深色文字居中排布。
+    设计意图：要点页信息量最大，通栏横带稳定托住整组文字；与 P3 底部圆角
+    面板、P5 胶囊标签形成三种不同的浅色承载。
+    2026-09-02 用户决策：永久摒弃发光字版式，全系统不再使用任何光晕垫底。"""
+    from PIL import Image, ImageDraw
     W, H = img.size
     margin = 96
+    pad_v = 44
     probe = ImageDraw.Draw(img)
     tf, bf, t_lines, b_lines, lh_t, lh_b, gap, text_h = _fit_text(
-        probe, title, body, W - 2 * margin, int(H * 0.36), 62, 44)
-    y0 = margin + 24
-    fill = _text_color_for(_zone_luminance(img, margin, y0, W - margin, y0 + text_h))
-    glow = WHITE_TEXT if fill == DARK_TEXT else DARK_TEXT
-    items, y = [], y0
+        probe, title, body, W - 2 * margin, int(H * 0.36) - 2 * pad_v, 62, 44)
+    band_h = text_h + 2 * pad_v
+    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    ImageDraw.Draw(overlay).rectangle((0, 0, W, band_h),
+                                      fill=(255, 255, 255, 205))
+    img.paste(Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB"), (0, 0))
+    draw = ImageDraw.Draw(img)
+    y = pad_v
     for line in t_lines:
-        items.append(((W / 2, y + lh_t / 2), line, tf, fill))
+        draw.text((W / 2, y + lh_t / 2), line, font=tf, fill=DARK_TEXT, anchor="mm")
         y += lh_t
     y += gap
     for line in b_lines:
-        items.append(((W / 2, y + lh_b / 2), line, bf, fill))
+        draw.text((W / 2, y + lh_b / 2), line, font=bf, fill=DARK_TEXT, anchor="mm")
         y += lh_b
-    _draw_lines_glow(img, items, glow)
 
 
 def _style_light_panel(img, title: str, body: str):
@@ -354,42 +349,148 @@ def _style_capsule_tags(img, title: str, body: str):
             yy += lh
 
 
-def _style_center_adaptive(img, title: str, body: str):
-    """P6 总结页（zone=center）：无面板居中大标题+充足留白；文字颜色按该区域
-    亮度自适应（亮区深字/暗区白字），垫反向柔和外发光保证可读。
-    设计意图：收尾页只要一句结论，居中大字号+大量留白，干净利落。"""
-    from PIL import ImageDraw
+def _style_center_capsule(img, title: str, body: str):
+    """P6 总结页（zone=center）：浅色居中胶囊大标题——标题一颗大胶囊、
+    正文一颗小胶囊，纵向居中成组，深色文字。
+    设计意图：收尾页只要一句结论，居中大字号胶囊干净利落；与 P5 顶部
+    小胶囊群的区别：居中、字号更大、最多两颗。
+    2026-09-02 用户决策：永久摒弃发光字版式，全系统不再使用任何光晕垫底。"""
+    from PIL import Image, ImageDraw
+    W, H = img.size
+    margin = 96
+    pad_h, pad_v, pill_gap = 56, 26, 32
+    probe = ImageDraw.Draw(img)
+    tf, bf, t_lines, b_lines, lh_t, lh_b, gap, text_h = _fit_text(
+        probe, title, body, W - 2 * margin - 2 * pad_h,
+        int(H * 0.4) - 2 * pad_v - pill_gap, 84, 48)
+    blocks = [(t_lines, tf, lh_t)] if t_lines else []
+    if b_lines:
+        blocks.append((b_lines, bf, lh_b))
+    laid, total_h = [], 0
+    for lines, font, lh in blocks:
+        w = max(probe.textlength(l, font=font) for l in lines)
+        h = len(lines) * lh + 2 * pad_v
+        laid.append((lines, font, lh, w, h))
+        total_h += h
+    total_h += pill_gap * max(len(laid) - 1, 0)
+    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    od = ImageDraw.Draw(overlay)
+    y = (H - total_h) // 2
+    boxes = []
+    for lines, font, lh, w, h in laid:
+        x0, x1 = (W - w) / 2 - pad_h, (W + w) / 2 + pad_h
+        od.rounded_rectangle((x0, y, x1, y + h), radius=h / 2,
+                             fill=(255, 255, 255, 215))
+        boxes.append((lines, font, lh, y))
+        y += h + pill_gap
+    img.paste(Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB"), (0, 0))
+    draw = ImageDraw.Draw(img)
+    for lines, font, lh, y0 in boxes:
+        yy = y0 + pad_v
+        for line in lines:
+            draw.text((W / 2, yy + lh / 2), line, font=font, fill=DARK_TEXT,
+                      anchor="mm")
+            yy += lh
+
+
+# 经典彩色药丸的色块配色（淡绿/淡橙交替，复刻 08-26 老套图 AI 画字风格）
+_CLASSIC_PILL_COLORS = [(232, 241, 222, 220), (247, 228, 204, 220)]
+
+
+def _classic_body_segments(body: str) -> tuple:
+    """正文拆药丸短句 + 剩余小字注释：按顿号/逗号/句号等切分，前 3 段做药丸
+    （去掉句末标点，色块内不保留标点更干净），其余并作底部注释行。"""
+    import re
+    parts = [p for p in re.split(r"(?<=[、，。；！？])", body or "") if p.strip()]
+    pills = [re.sub(r"[、，。；！？]+$", "", p).strip() for p in parts[:3]]
+    pills = [p for p in pills if p]
+    footer = "".join(parts[3:]).strip() if len(parts) > 3 else ""
+    return pills, footer
+
+
+def _style_classic_pills(img, title: str, body: str):
+    """经典彩色药丸（2026-09-02，08-26 老管线套图 AI 画字风格的程序化复刻）：
+    顶部黑色粗体大标题 + 正文按短句拆彩色药丸色块（淡绿/淡橙交替、深色字、
+    居中纵向排列）+ 超出 3 句的剩余文字作底部小字注释。
+    用途：老管线套图的修正重出——文字由真实字体渲染（AI 画字必然偶发异体
+    变形，点名也修不正确），同时色块样式与已定型前图保持一致。"""
+    from PIL import Image, ImageDraw, ImageFont
     W, H = img.size
     margin = 96
     probe = ImageDraw.Draw(img)
-    tf, bf, t_lines, b_lines, lh_t, lh_b, gap, text_h = _fit_text(
-        probe, title, body, W - 2 * margin, int(H * 0.4), 84, 48)
-    y0 = (H - text_h) // 2
-    fill = _text_color_for(_zone_luminance(img, margin, y0, W - margin, y0 + text_h))
-    glow = WHITE_TEXT if fill == DARK_TEXT else DARK_TEXT
-    items, y = [], y0
+    reg_path, bold_path = _font_paths()
+    pills, footer = _classic_body_segments(body)
+    # 字号自适应缩小：整体高度超限则缩（最小 6 折）
+    for scale in (1.0, 0.92, 0.84, 0.76, 0.68, 0.6):
+        tf = ImageFont.truetype(bold_path, int(84 * scale))
+        pf = ImageFont.truetype(bold_path, int(52 * scale))
+        ff = ImageFont.truetype(reg_path, int(38 * scale))
+        lh_t, lh_p, lh_f = int(84 * scale * 1.35), int(52 * scale * 1.4), \
+            int(38 * scale * 1.5)
+        pad_h, pad_v, pill_gap = int(52 * scale), int(20 * scale), int(28 * scale)
+        t_lines = _wrap(probe, title, tf, W - 2 * margin) if title else []
+        laid, total_h = [], len(t_lines) * lh_t
+        for seg in pills:
+            lines = _wrap(probe, seg, pf, W - 2 * margin - 2 * pad_h)
+            w = max(probe.textlength(l, font=pf) for l in lines)
+            h = len(lines) * lh_p + 2 * pad_v
+            laid.append((lines, w, h))
+            total_h += h
+        total_h += pill_gap * len(laid)  # 标题与首个药丸也有间隔
+        f_lines = _wrap(probe, footer, ff, W - 2 * margin) if footer else []
+        if f_lines:
+            total_h += pill_gap + len(f_lines) * lh_f
+        if total_h <= int(H * 0.66) or scale == 0.6:
+            break
+    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    od = ImageDraw.Draw(overlay)
+    y = int(H * 0.08) + len(t_lines) * lh_t  # 药丸从标题下方开始
+    boxes = []
+    for i, (lines, w, h) in enumerate(laid):
+        y += pill_gap
+        x0, x1 = (W - w) / 2 - pad_h, (W + w) / 2 + pad_h
+        od.rounded_rectangle((x0, y, x1, y + h), radius=h / 2,
+                             fill=_CLASSIC_PILL_COLORS[i % 2])
+        boxes.append((lines, y, h))
+        y += h
+    img.paste(Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB"),
+              (0, 0))
+    draw = ImageDraw.Draw(img)
+    yy = int(H * 0.08)
     for line in t_lines:
-        items.append(((W / 2, y + lh_t / 2), line, tf, fill))
-        y += lh_t
-    y += gap
-    for line in b_lines:
-        items.append(((W / 2, y + lh_b / 2), line, bf, fill))
-        y += lh_b
-    _draw_lines_glow(img, items, glow)
+        draw.text((W / 2, yy + lh_t / 2), line, font=tf, fill=DARK_TEXT,
+                  anchor="mm")
+        yy += lh_t
+    for lines, y0, h in boxes:
+        yy = y0 + pad_v
+        for line in lines:
+            draw.text((W / 2, yy + lh_p / 2), line, font=pf, fill=DARK_TEXT,
+                      anchor="mm")
+            yy += lh_p
+    if f_lines:
+        yy = boxes[-1][1] + boxes[-1][2] + pill_gap if boxes else \
+            int(H * 0.08) + len(t_lines) * lh_t + pill_gap
+        for line in f_lines:
+            draw.text((W / 2, yy + lh_f / 2), line, font=ff, fill=(60, 58, 54),
+                      anchor="mm")
+            yy += lh_f
 
 
 # 样式名 → 实现函数（monkeypatch 本表可断言页码分派）
 _STYLES = {
-    "gradient_scrim": _style_gradient_scrim,
-    "glow_text": _style_glow_text,
+    "light_scrim": _style_light_scrim,
+    "light_banner": _style_light_banner,
     "light_panel": _style_light_panel,
     "magazine_rule": _style_magazine_rule,
     "capsule_tags": _style_capsule_tags,
-    "center_adaptive": _style_center_adaptive,
+    "center_capsule": _style_center_capsule,
+    # 不走槽位轮换：老管线套图跟随（composite_page(style=...) 显式指定）
+    "classic_pills": _style_classic_pills,
 }
 
 
-def _draw_text_block(img, title: str, body: str, slot: int):
-    """按页码分派排版样式（6 页轮换，2026-08-31 用户反馈「全是黑框」）：
-    原实现只有「半透明深色圆角面板」一种，亮背景图每页都是深色框。"""
-    _STYLES[_STYLE_BY_PAGE.get(slot, "glow_text")](img, title, body)
+def _draw_text_block(img, title: str, body: str, slot: int, style: str = None):
+    """按页码分派排版样式（6 页轮换，2026-08-31 用户反馈「全是黑框」；
+    2026-09-02 用户决策：永久摒弃深底白字与发光字两类版式，全浅色系）。
+    style 显式指定时跳过槽位轮换（老管线套图跟随用 classic_pills）。"""
+    _STYLES[style or _STYLE_BY_PAGE.get(slot, "light_banner")](img, title, body)

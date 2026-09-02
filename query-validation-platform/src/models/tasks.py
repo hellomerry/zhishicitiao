@@ -41,3 +41,11 @@ class Task(Base):
     prev_status = Column(Text)
     trashed_at = Column(TIMESTAMP(timezone=True))
     trashed_by = Column(Text)
+    # 版式禁用（2026-09-02，迁移 019）：{页码str: [禁用槽位int]}——用户对某页
+    # 合成文字版式不满意可永久禁用，生图留白区与 text_composite 落版随
+    # slot_for_page 顺延到下一个未禁用槽位；NULL=无禁用
+    layout_bans = Column(JSONB)
+    # 场景化视觉扩写快照（2026-09-02，迁移 020）：asset_gen 把 6 页文案扩写为
+    # 英文视觉描述（{"style_en": 全套统一风格英文版, "pages": [6 条视觉方向]}），
+    # 冻结后定点重生成沿用；NULL=未扩写/扩写失败（回退中文骨架）
+    visual_json = Column(JSONB)

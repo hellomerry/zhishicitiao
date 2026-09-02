@@ -105,3 +105,29 @@ async def test_variant_for_db_overrides_builtin():
     assert await variant_for(name, uid, seed=1) == "本篇风格变体：乙变体。"
     assert await variant_for(name, uid, seed=2) == "本篇风格变体：丙变体。"
     assert await variant_for(name, uid, seed=3) == "本篇风格变体：甲变体。"
+
+
+# ---------- 版式禁用（2026-09-02，迁移 019） ----------
+
+def test_slot_for_page_ban_skips_to_next():
+    """禁用当前槽位 → 顺轮换到下一个未禁用槽位；不影响其它页。"""
+    from src.gateway.prompt_versions import slot_for_page
+    assert slot_for_page(6, 2) == 2                       # 无禁用：((6-1+2)%6)+1
+    assert slot_for_page(6, 2, banned=[2]) == 3           # 禁用当前 → 顺延
+    assert slot_for_page(6, 2, banned=[2, 3, 4]) == 5     # 连续禁用跨槽
+    assert slot_for_page(6, 2, banned=[2, 3, 4, 5, 6]) == 1  # 绕回表头
+    assert slot_for_page(5, 2, banned=[2]) == 1           # 禁用表按页隔离
+
+
+def test_layout_ban_syncs_prompt_and_composite(monkeypatch):
+    """禁用槽位后：提示词留白区与合成落版取同一新槽位（不错位）。"""
+    captured = {}
+    monkeypatch.setattr(tc, "_font_paths", lambda: ("reg", "bold"))
+    monkeypatch.setattr(tc, "_draw_text_block",
+                        lambda img, t, b, slot: captured.setdefault("slot", slot))
+    out = tc.composite_page(_png(), "标题：正文内容", 6, offset=2, banned=[2])
+    assert out is not None
+    assert captured["slot"] == 3
+    p = get_image_prompt("general", "文案", 6, no_text=True, layout_offset=2,
+                         layout_bans=[2])
+    assert pv._PAGE_LAYOUTS_NOTEXT[2] in p  # slot 3 → 索引 2（特写页留白区）

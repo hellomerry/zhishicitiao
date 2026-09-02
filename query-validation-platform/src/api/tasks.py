@@ -178,6 +178,22 @@ def _version_of(asset, version_map):
     return version_map.get(asset.id)
 
 
+def _layout_info(task) -> dict:
+    """版式信息（2026-09-02 版式禁用，迁移 019）：每页当前合成槽位/版式名 +
+    已禁用表。槽位由 slot_for_page 按 task_id 偏移推导（与合成落版同值）。"""
+    from src.gateway.prompt_versions import slot_for_page, SLOT_NAMES
+    from src.pipeline.nodes import _layout_offset_for
+    bans = task.layout_bans or {}
+    offset = _layout_offset_for(task.id)
+    slots = {}
+    for p in range(1, 7):
+        s = slot_for_page(p, offset, set(bans.get(str(p)) or []))
+        slots[str(p)] = {"slot": s, "name": SLOT_NAMES.get(s, f"槽位{s}"),
+                         "banned": sorted(bans.get(str(p)) or [])}
+    return {"offset": offset, "pages": slots,
+            "names": {str(k): v for k, v in SLOT_NAMES.items()}}
+
+
 @router.get("/api/tasks/{task_id}/detail")
 async def task_detail(task_id: str, actor: str = ""):
     """任务详情：全字段 + 节点进度 + 正文/分页/图片/事实点/证据/风险 + 三方审核状态。
@@ -328,6 +344,9 @@ async def task_detail(task_id: str, actor: str = ""):
             "review": review_status,
             "reject_marks": [{"item_type": m.item_type, "page_index": m.page_index,
                               "reason": m.reason} for m in marks],
+            # 版式信息（2026-09-02 版式禁用）：每页当前合成槽位/版式名 + 已禁用表，
+            # 前端「交付配图」区展示版式名并提供「永久禁用此版式」入口
+            "layout": _layout_info(task),
         }
 
 
@@ -626,6 +645,11 @@ async def fix_task(task_id: str, payload: FixIn):
         query = task.query
         await session.commit()
     auto = await enqueue_regen(tid)
+    # 视觉反馈笔记沉淀（2026-09-02，迁移 020）：配图修正理由注入后续视觉扩写
+    from src.services.visual_writer import add_visual_note
+    for m in payload.marks:
+        if m.item_type == "image" and m.reason.strip():
+            await add_visual_note(m.reason.strip(), source="fix_mark")
     items = "、".join(
         f"{'文案' if m.item_type == 'page' else '配图'}P{m.page_index}"
         for m in payload.marks)
@@ -639,6 +663,79 @@ async def fix_task(task_id: str, payload: FixIn):
                          f"创建者自助修正（{items}）：{query[:50]}", task_id=tid)
     return {"ok": True, "task_id": str(tid), "kind": auto["kind"],
             "mark_count": auto["mark_count"]}
+
+
+class LayoutBanIn(BaseModel):
+    actor: str = "anonymous"
+    page_index: int        # 1-6
+    slot: int              # 要永久禁用的版式槽位 1-6（通常是该页当前槽位）
+    regen: bool = True     # 禁用后自动重出该页配图（换下一未禁用版式）
+
+
+@router.post("/api/tasks/{task_id}/layout_ban")
+async def layout_ban(task_id: str, payload: LayoutBanIn):
+    """版式永久禁用（2026-09-02，迁移 019）：某页合成文字版式与整套风格不符时，
+    属主/admin 可永久禁用该版式——落 tasks.layout_bans 后，该页以后所有重生成
+    （定点/全链/崩溃恢复）都经 slot_for_page 顺延到下一个未禁用版式，生图留白区
+    与合成落版同步切换。默认立即自动重出该页配图（写 creator 标记 + enqueue_regen，
+    与 fix 同链路）。每页最多禁 5 种，至少保留 1 种可用。"""
+    from src.services.ownership import get_actor, check_owner
+    from src.services.regen import enqueue_regen
+    from src.models.review import RejectMark
+    from src.gateway.prompt_versions import slot_for_page, SLOT_NAMES
+    from src.pipeline.nodes import _layout_offset_for
+    try:
+        tid = uuid.UUID(task_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid task_id")
+    if not (1 <= payload.page_index <= 6):
+        raise HTTPException(status_code=400, detail="invalid page_index")
+    if not (1 <= payload.slot <= 6):
+        raise HTTPException(status_code=400, detail="invalid slot")
+    auto = {"kind": "none"}
+    async with SessionLocal() as session:
+        uid, role = await get_actor(session, payload.actor)
+        task = (await session.execute(select(Task).where(Task.id == tid))).scalars().first()
+        if not task:
+            raise HTTPException(status_code=404, detail="task not found")
+        check_owner(task, uid, role)
+        if task.status not in ("review", "approved", "rejected", "confirm_gen"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"当前状态（{task.status}）不可禁用版式：生产中任务请等待产出")
+        key = str(payload.page_index)
+        bans = {k: sorted(set(v or [])) for k, v in (task.layout_bans or {}).items()}
+        banned = set(bans.get(key) or [])
+        if payload.slot in banned:
+            raise HTTPException(status_code=400, detail="该版式本就在禁用表中")
+        if len(banned) >= 5:
+            raise HTTPException(status_code=400, detail="每页至少保留 1 种可用版式")
+        banned.add(payload.slot)
+        bans[key] = sorted(banned)
+        task.layout_bans = bans  # 赋新 dict，SQLAlchemy 才识别 JSONB 变更
+        query = task.query
+        status = task.status
+        offset = _layout_offset_for(tid)
+        new_slot = slot_for_page(payload.page_index, offset, banned)
+        can_regen = payload.regen and status in ("review", "approved", "rejected")
+        if can_regen:
+            session.add(RejectMark(
+                task_id=tid, role="creator", item_type="image",
+                page_index=payload.page_index,
+                reason=f"版式「{SLOT_NAMES.get(payload.slot)}」被永久禁用，"
+                       f"自动换用「{SLOT_NAMES.get(new_slot)}」版式重出"))
+        await session.commit()
+    if can_regen:
+        auto = await enqueue_regen(tid)
+    await log_action(payload.actor, "layout_ban",
+                     f"永久禁用 P{payload.page_index} 版式「"
+                     f"{SLOT_NAMES.get(payload.slot)}」"
+                     + (f"，自动换「{SLOT_NAMES.get(new_slot)}」重出"
+                        if can_regen else "（未触发重出）")
+                     + f"：{query[:50]}", task_id=tid)
+    return {"ok": True, "page_index": payload.page_index,
+            "banned": sorted(banned), "new_slot": new_slot,
+            "new_slot_name": SLOT_NAMES.get(new_slot), "regen": auto.get("kind")}
 
 
 @router.post("/api/tasks/{task_id}/retry")

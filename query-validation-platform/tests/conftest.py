@@ -24,7 +24,7 @@ _ALL_TABLES = [
     "cross_checks", "risk_classifications", "review_sessions", "review_actions",
     "issues", "batches", "batch_members", "approvals", "publish_snapshots",
     "node_events", "prompt_templates", "activity_logs", "reject_marks",
-    "style_keywords",
+    "style_keywords", "visual_notes",
 ]
 
 _MIGRATION_DIR = Path(__file__).resolve().parent.parent / "migrations"

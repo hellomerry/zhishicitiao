@@ -9,6 +9,7 @@ const TasksView = {
       nodes: [], timer: null, es: null, sseTimer: null,
       live: {},              // task_id -> 内存实时态（current_node/debug/imgs）
       detail: null, detailError: '', retrying: false,
+      banning: false,        // 版式禁用提交中（2026-09-02）
       uploadSubject: '',  // 手动上传参考图的标注（compare 模式 A:/B: 前缀）
       imageProvider: 'openai_images', savingModel: false,  // 任务级生图模型（默认 gpt-image-2）
       fixMode: false, fixMarks: {}, fixing: false,   // 创建者自助修正（定点标记+自动重生成）
@@ -206,6 +207,31 @@ const TasksView = {
       finally { this.savingModel = false; }
     },
     fixKey(t, p) { return `${t}:${p}`; },
+    // ---------- 版式永久禁用（2026-09-02） ----------
+    layoutName(p) {
+      const info = this.detail && this.detail.layout;
+      const pg = info && info.pages && info.pages[String(p)];
+      return pg ? pg.name : '';
+    },
+    async banLayout(a) {
+      const info = this.detail && this.detail.layout;
+      const pg = info && info.pages && info.pages[String(a.page_index)];
+      if (!pg) return;
+      if (!confirm(`永久禁用 P${a.page_index} 当前版式「${pg.name}」？\n\n` +
+                   `禁用后系统自动换用其它版式重出本页配图；该页以后任何重生成（含全链重跑）都不会再用这个版式。`)) return;
+      this.banning = true;
+      try {
+        const r = await api.post(`/api/tasks/${this.detailTask.id}/layout_ban`,
+          { actor: this.actorName, page_index: a.page_index, slot: pg.slot });
+        alert(`已永久禁用「${pg.name}」` +
+              (r.regen && r.regen !== 'none'
+                ? `，P${a.page_index} 正按「${r.new_slot_name}」版式自动重出，稍后回来看新图。`
+                : '。'));
+        await this.load();
+        await this.open(this.detailTask);
+      } catch (e) { alert('禁用失败：' + e.message); }
+      finally { this.banning = false; }
+    },
     isFixMarked(t, p) { return !!this.fixMarks[this.fixKey(t, p)]; },
     toggleFixMark(t, p) {
       const k = this.fixKey(t, p);
@@ -714,10 +740,15 @@ const TasksView = {
               <figure v-for="a in genAssets" :key="a.id">
                 <img :src="a.display_url || a.image_url" loading="lazy" alt="" @click="openZoom(a, false)">
                 <figcaption class="muted">P{{ a.page_index }} · <span v-if="a.version_no > 1" class="tag tag-blue">修正版 第{{ a.version_no }}版</span><span v-else>初版</span>
+                  <span v-if="layoutName(a.page_index)" class="tag tag-gray" :title="'本页当前文字版式：' + layoutName(a.page_index)">版式·{{ layoutName(a.page_index) }}</span>
                   <button v-if="fixMode" class="btn btn-sm" :class="isFixMarked('image', a.page_index) ? 'btn-danger' : 'btn-outline'"
                           style="margin-left:6px" @click.stop="toggleFixMark('image', a.page_index)">
                     {{ isFixMarked('image', a.page_index) ? '✓ 已标记' : '⚑ 标问题' }}
                   </button>
+                  <button v-if="canFix && layoutName(a.page_index)" class="btn btn-outline btn-sm" style="margin-left:6px"
+                          :disabled="banning"
+                          :title="'永久禁用本页当前版式「' + layoutName(a.page_index) + '」，并自动换下一版式重出本页配图（禁用永久生效，以后该页重出都不会再用它）'"
+                          @click.stop="banLayout(a)">🚫 禁用此版式</button>
                 </figcaption>
               </figure>
             </div>

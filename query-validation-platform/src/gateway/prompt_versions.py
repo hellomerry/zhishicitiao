@@ -164,6 +164,55 @@ _PAGE_LAYOUTS_NOTEXT = [
     "本页是总结页：画面中部约五分之二保持干净、简洁、低细节，用于后期叠加文字，四周环绕装饰元素。",
 ]
 
+# ===== 英文无字骨架（2026-09-02 场景化视觉扩写，迁移 020）=====
+# 借鉴 8003 实测：gpt-image-2 对英文视觉指令的理解显著更准。visual_writer
+# 把 6 页文案扩写成英文视觉描述（含每题材自定色彩方向）后走本骨架；
+# 扩写失败回退上面的中文无字骨架。文字仍由 text_composite 程序合成。
+_EN_ZONE = {1: "bottom third", 2: "top two-fifths", 3: "bottom quarter strip",
+            4: "top third", 5: "top third",
+            6: "central band (about two-fifths of the height)"}
+
+_EN_NOTEXT_SKELETON = (
+    "A 3:4 vertical TEXT-FREE background illustration for a Chinese social-media "
+    "info card. ABSOLUTELY NO text, letters, numbers, punctuation, signs, labels "
+    "or watermarks anywhere in the image — all typography is composited later by "
+    "software. No human faces, no books. The subject must be clearly visible, "
+    "complete and unobstructed. Background must never be pure white or very dark. "
+    "Refined, clean texture; no cheap plastic feel."
+)
+
+_EN_COMPARE_RULE = (
+    "HARD REQUIREMENT (comparison page): present BOTH subjects side by side in "
+    "the same frame (split or top-bottom composition), same dimension of "
+    "comparison; reference photos of subject A come before subject B."
+)
+
+_EN_REFS_RULE = (
+    "Blend the attached real reference photo(s) naturally into the scene: remove "
+    "watermarks, any people and ALL text on them; do not repeat the same "
+    "reference photo across pages; do not add other photos."
+)
+
+# 槽位 → 版式中文名（与 text_composite._STYLE_BY_PAGE 一一对应，前端展示/禁用用）
+# 2026-09-02 用户决策：永久摒弃深底白字与发光字两类版式，1/2/6 已改浅色系
+SLOT_NAMES = {1: "浅色渐变蒙版", 2: "浅色通栏横幅", 3: "浅色圆角面板",
+              4: "杂志分隔线", 5: "胶囊标签", 6: "居中胶囊标题"}
+
+
+def slot_for_page(page_index: int, offset: int = 0, banned=None) -> int:
+    """页码 + 任务偏移 → 版式槽位 1-6（无字合成模式的留白区/排版样式索引）。
+
+    banned（2026-09-02 版式禁用，迁移 019）：该页被用户永久禁用的槽位集合，
+    命中则顺轮换到下一个未禁用槽位。生图提示词的留白区与 text_composite 的
+    合成落版必须经本函数取同一槽位，两边才不错开。"""
+    banned = set(banned or ())
+    base = (page_index - 1 + offset) % 6
+    for i in range(6):
+        cand = (base + i) % 6 + 1
+        if cand not in banned:
+            return cand
+    return base + 1  # 兜底：一页最多禁 5 个（API 限制），理论上到不了这里
+
 # 旧版提示词（保留兼容：get_prompt 仍可读 draft_v1 / page_split_v1 / evidence_v1）
 PROMPT_VERSIONS = {
     "draft_v1": DRAFT_PROMPTS["general"],
@@ -261,19 +310,46 @@ def get_image_prompt(mode: str, page_body: str, page_index: int = None,
                      template: str = None, no_text: bool = False,
                      style_desc: str = None, page_subject: str = None,
                      has_refs: bool = False, layout_offset: int = 0,
-                     plan_page: dict = None) -> str:
+                     plan_page: dict = None, layout_bans=None,
+                     force_slot: int = None, visual: str = None,
+                     style_en: str = None) -> str:
     # layout_offset（2026-09-02 反同质化）：分页布局/文字形式轮换的起点按任务
     # 偏移——此前每个任务的第 N 页永远用第 N 种布局（页位同构，套与套摆一起
     # 一眼模板感）；偏移后每套图 6 页仍各不同，但页位映射随任务变化。
-    # 无字版的偏移必须与 text_composite 的文字区/样式槽位用同一值（两边同步）
+    # 无字版的偏移必须与 text_composite 的文字区/样式槽位用同一值（两边同步）。
+    # layout_bans（2026-09-02 版式禁用）：该页被禁用的槽位集合，经 slot_for_page
+    # 顺延到未禁用槽位；与 composite_page(banned=...) 传同一份。
+    # force_slot（2026-09-02 老管线套图跟随）：classic_pills 合成落版在顶部，
+    # 留白区强制槽位 2（top），与 composite_page(style="classic_pills") 配套。
     if no_text:
         # 文字后期合成模式：AI 只画无字背景并预留文字区（固定内置模板，
         # 自定义模板都含文字要求、与此模式冲突）
+        slot = force_slot or slot_for_page(page_index or 1, layout_offset,
+                                           layout_bans)
+        if visual:
+            # 英文视觉骨架（2026-09-02 场景化扩写，实测风格显著优于中文骨架）：
+            # visual/style_en 由 visual_writer 产出并冻结在 tasks.visual_json；
+            # 该路径下 page_subject/plan_page 不再注入（视觉描述已覆盖画面创意）
+            parts = [_EN_NOTEXT_SKELETON,
+                     f"VISUAL DIRECTION for this page (follow closely): {visual}"]
+            if style_en:
+                parts.append(
+                    "UNIFIED STYLE for ALL 6 pages of this set (lighting, "
+                    "palette, texture and decor must stay identical across "
+                    f"pages, only the scene varies): {style_en}")
+            if page_index:
+                parts.append(
+                    f"Keep the {_EN_ZONE[slot]} of the canvas clean, simple "
+                    "and low-detail for later text overlay.")
+            if mode == "compare":
+                parts.append(_EN_COMPARE_RULE)
+            if has_refs or mode in ("single", "compare"):
+                parts.append(_EN_REFS_RULE)
+            return "\n".join(parts)
         prompt = (_MODE_PREFIX_NOTEXT.get(mode, _MODE_PREFIX_NOTEXT["general"])
                   + _SHARED_IMAGE_STYLE_NOTEXT)
         if page_index:
-            prompt += _PAGE_LAYOUTS_NOTEXT[(page_index - 1 + layout_offset)
-                                           % len(_PAGE_LAYOUTS_NOTEXT)]
+            prompt += _PAGE_LAYOUTS_NOTEXT[slot - 1]
         prompt = _apply_style_desc(prompt, style_desc)
         prompt = _apply_page_subject(prompt, page_subject)
         # 策划方案只指导画面创意，文字留白区仍按代码槽位（合成落版对齐）

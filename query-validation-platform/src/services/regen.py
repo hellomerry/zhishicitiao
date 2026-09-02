@@ -166,6 +166,16 @@ async def partial_regen(task_id) -> dict:
         if task.plan_json and isinstance(task.plan_json, dict):
             plan_pages = {p.get("page"): p
                           for p in (task.plan_json.get("pages") or [])}
+        # 版式禁用（迁移 019）：重出页沿用任务的槽位禁用表，禁过的版式不再出现
+        layout_bans = task.layout_bans or {}
+        # 场景化视觉扩写快照（迁移 020）：冻结的英文视觉描述沿用，不重扩写
+        # （LLM 非确定性会让重出页画面与整套漂移，与风格/主体快照同一哲学）
+        visual_snap = task.visual_json if isinstance(
+            task.visual_json, dict) and task.visual_json.get("pages") else None
+        # 分页画面主体快照（迁移 014）：沿用首次出图冻结的主体，不再重新提取——
+        # 重提是 LLM 非确定性调用，会和整套其它页的主体口径漂移（风格断层来源之一）
+        frozen_subjects = task.page_subjects if isinstance(
+            task.page_subjects, list) and task.page_subjects else None
         marks = await get_open_marks(session, task_id)
         rounds, _ = await get_rejection_feedback(session, task_id)
     if not marks:
@@ -179,7 +189,11 @@ async def partial_regen(task_id) -> dict:
     pages_to_rewrite = sorted(page_reasons)
     # 文案被重写的页必须连带重生成配图（图文一致），加上直接被标记的图
     images_to_regen = sorted(set(image_reasons) | set(pages_to_rewrite))
-    base_input = {"task_id": task_id, "regen_round": rounds}
+    # 幂等键必须随本轮标记变化（2026-09-02 修复）：创建者自助修正不产生
+    # ReviewAction，regen_round 不变；同一页二次修正若键不变，execute_node
+    # 幂等跳过 → 标记被 resolved 但图/文案根本没重生成（修正"没开始"的根因）
+    base_input = {"task_id": task_id, "regen_round": rounds,
+                  "mark_ids": [str(m.id) for m in marks]}
 
     async def _rewrite_pages(input_data: dict) -> dict:
         template = await get_effective_prompt("page_regen", None, owner_id)
@@ -220,36 +234,49 @@ async def partial_regen(task_id) -> dict:
         from src.services.style_pick import style_desc_for
         image_template = await get_effective_prompt("image_gen", mode, owner_id)
         style_desc = style_desc_snap or await style_desc_for(gen_style, owner_id)
-        # 每页画面主体提取（与 node_asset_gen 对齐，2026-08-31）：定点重生成原来
-        # 不传 page_subject，重出的图沿用通用锚定句，图文不对应问题修不到。
+        # 每页画面主体提取（与 node_asset_gen 对齐，2026-08-31）：优先复用任务上
+        # 冻结的 page_subjects（2026-09-02：此前每次都重新 LLM 提取，非确定性导致
+        # 重出页主体和整套其它页漂移）；仅无快照（014 前老任务）才现场提取。
         # 在文案重写之后执行，读到的是重写后的新文案。失败回退 None 不阻塞。
-        page_subjects = None
-        try:
-            from src.services.page_subject import extract_page_subjects
-            async with SessionLocal() as session:
-                all_pages = (await session.execute(
-                    select(PageCopy).where(PageCopy.task_id == task_id)
-                    .order_by(PageCopy.page_index))).scalars().all()
-            bodies = [(p.body or "") for p in all_pages][:6]
-            while len(bodies) < 6:
-                bodies.append("")
-            page_subjects = await extract_page_subjects(
-                bodies,
-                llm_call=lambda pr: call_with_failover(
-                    pr, DEEPSEEK_MODEL, KIMI_MODEL, max_retries=1))
-        except Exception:
-            import traceback
-            traceback.print_exc()
-            page_subjects = None
+        page_subjects = frozen_subjects
+        if not page_subjects:
+            try:
+                from src.services.page_subject import extract_page_subjects
+                async with SessionLocal() as session:
+                    all_pages = (await session.execute(
+                        select(PageCopy).where(PageCopy.task_id == task_id)
+                        .order_by(PageCopy.page_index))).scalars().all()
+                bodies = [(p.body or "") for p in all_pages][:6]
+                while len(bodies) < 6:
+                    bodies.append("")
+                page_subjects = await extract_page_subjects(
+                    bodies,
+                    llm_call=lambda pr: call_with_failover(
+                        pr, DEEPSEEK_MODEL, KIMI_MODEL, max_retries=1))
+            except Exception:
+                import traceback
+                traceback.print_exc()
+                page_subjects = None
         async with SessionLocal() as session:
             # 保留图的 hash 作为去重基准：重生成图不得与已认可的图重复（只算正式版）
-            kept = (await session.execute(
-                select(Asset.hash).where(Asset.task_id == task_id,
-                                         Asset.source_type == "ai_generated",
-                                         Asset.is_active == True,
-                                         ~Asset.page_index.in_(images_to_regen)))
-            ).scalars().all()
-            seen_hashes = {h for h in kept if h}
+            kept_assets = (await session.execute(
+                select(Asset).where(Asset.task_id == task_id,
+                                    Asset.source_type == "ai_generated",
+                                    Asset.is_active == True,
+                                    ~Asset.page_index.in_(images_to_regen))
+                .order_by(Asset.page_index))).scalars().all()
+            seen_hashes = {a.hash for a in kept_assets if a.hash}
+            # 套图文字模式跟随已定型前图（2026-09-02 用户决策「已定型的风格必须
+            # 遵从」）：保留页中存在老管线 AI 画字图（model_version 无 |textcmp）
+            # 时进入跟随模式——AI 只画无字背景（第一张保留页作风格参照传入图生图，
+            # 画风/色调/装饰元素与前图一致），文字用「经典彩色药丸」版式程序合成
+            # （复刻 08-26 老套图的色块样式）。不让 AI 画字：实测风格对了字形仍会
+            # 异体变形，点名异常文字也修不正确（狗狗吃西红柿 P6 v6 事故）。
+            legacy_pages = [a for a in kept_assets
+                            if a.model_version and "textcmp" not in a.model_version]
+            legacy_mode = bool(legacy_pages)
+            legacy_composite = legacy_mode and settings.text_composite_enabled
+            style_ref_url = legacy_pages[0].image_url if legacy_pages else None
             reference_urls = None
             # 与 node_asset_gen 口径一致（2026-09-01）：有 official 实图就作参考，
             # 不再按 mode 判断（通用模式实图/手动上传在定点重生成同样生效）
@@ -279,17 +306,46 @@ async def partial_regen(task_id) -> dict:
                                                     if page_subjects and p <= 6
                                                     else None),
                                       layout_offset=layout_offset,
-                                      plan_page=(plan_pages or {}).get(p))
+                                      layout_bans=set(layout_bans.get(str(p)) or [])
+                                      or None,
+                                      plan_page=None if legacy_mode
+                                      else (plan_pages or {}).get(p),
+                                      # 经典彩色药丸落版在顶部，留白区强制槽位 2
+                                      force_slot=2 if legacy_composite else None,
+                                      visual=(visual_snap["pages"][p - 1]
+                                              if visual_snap and p <= 6
+                                              else None),
+                                      style_en=(visual_snap["style_en"]
+                                                if visual_snap else None))
             fb = image_reasons.get(p, []) + page_reasons.get(p, [])
             if fb:
                 prompt += ("\n\n【审核意见】该页上一版本被人工审核驳回："
                            + "；".join(fb) + "。请重新绘制，必须避免上述问题。")
-            r = await _generate_single_asset(task_id, p, prompt, reference_urls,
+            if legacy_mode:
+                # 风格参照图放参考图第一位，并在提示词里点名它的角色
+                if legacy_composite:
+                    prompt += ("\n\n【套图一致性（最高优先级）】附件第一张是本套"
+                               "图文已确定的前图。本页是它的同套续页：整体画风、"
+                               "色调、装饰元素、构图习惯必须与其完全一致，只替换"
+                               "本页的主体画面；画面中不要出现任何文字（文字由"
+                               "后期程序按前图的彩色色块样式合成）。")
+                else:  # 文字合成总开关关闭时的兜底：AI 画字跟随前图
+                    prompt += ("\n\n【套图一致性（最高优先级）】附件第一张是本套"
+                               "图文已确定的前图。本页是它的同套续页：整体画风、"
+                               "色调、文字呈现形式必须与其完全一致，只替换本页的"
+                               "文字内容和主体画面；文字以分页文案为准。")
+            call_refs = (([style_ref_url] + (reference_urls or []))
+                         if legacy_mode else reference_urls)
+            r = await _generate_single_asset(task_id, p, prompt, call_refs,
                                              provider=img_provider)
             if not settings.mock_image_gen:
                 r, extra = await _dedupe_and_validate(
-                    r, prompt, reference_urls, task_id, p, seen_hashes,
-                    page_body=body_map.get(p, ""), layout_offset=layout_offset)
+                    r, prompt, call_refs, task_id, p, seen_hashes,
+                    page_body=body_map.get(p, ""),
+                    layout_offset=layout_offset,
+                    layout_bans=set(layout_bans.get(str(p)) or []) or None,
+                    composite_style=("classic_pills" if legacy_composite
+                                     else None))
                 extra_gen += extra
             async with SessionLocal() as session:
                 # 旧版本不删除，降级为历史版本（is_active=false）保留，

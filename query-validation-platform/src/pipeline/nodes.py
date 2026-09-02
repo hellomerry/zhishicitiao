@@ -795,13 +795,15 @@ async def _generate_single_asset(task_id, page_index: int, prompt: str,
 async def _dedupe_and_validate(asset: dict, prompt: str, reference_urls,
                                task_id, page_index: int, seen_hashes: set,
                                page_body: str = "", provider: str = None,
-                               layout_offset: int = 0) -> tuple:
+                               layout_offset: int = 0, layout_bans=None,
+                               composite_style: str = None) -> tuple:
     """内容级去重 + 尺寸校验：下载图片字节算内容 hash，与本任务已出图重复则换构图重生成一次；
     宽高比偏离 3:4 则在 model_version 上标记（交付导出时会统一归一到 1152x1536）。
     text_composite_enabled 且给了 page_body 时，AI 图只是无字背景：在本地化前把
     分页文案用真实字体合成上去（终极方案，从根上消除异体变形/伪汉字）。
     layout_offset 必须与 get_image_prompt 的页位偏移同值（合成落版对齐留白区）。
-    返回 (asset, 额外生成次数)。"""
+    composite_style（2026-09-02 老管线套图跟随）：显式版式名（classic_pills），
+    跳过槽位轮换。返回 (asset, 额外生成次数)。"""
     import io
     from src.gateway.ocr import fetch_image_bytes
     extra = 0
@@ -824,7 +826,8 @@ async def _dedupe_and_validate(asset: dict, prompt: str, reference_urls,
         if settings.text_composite_enabled and (page_body or "").strip():
             from src.services.text_composite import composite_page
             composited = composite_page(data, page_body, page_index,
-                                        offset=layout_offset)
+                                        offset=layout_offset, banned=layout_bans,
+                                        style=composite_style)
             if composited:
                 data, ctype = composited, "image/png"
                 asset["hash"] = hashlib.md5(data).hexdigest()
@@ -846,7 +849,7 @@ async def _dedupe_and_validate(asset: dict, prompt: str, reference_urls,
 async def _text_quality_gate(asset: dict, prompt: str, reference_urls,
                              task_id, page_index: int, expected_text: str,
                              seen_hashes: set, provider: str = None,
-                             layout_offset: int = 0) -> tuple:
+                             layout_offset: int = 0, layout_bans=None) -> tuple:
     """出图文字质检（2026-08-25 用户反馈「文字扭曲概率非常大」）：OCR 识别图上文字，
     与分页文案对撞，相似度低于阈值判为文字扭曲，换构图重生成
     （最多 settings.asset_text_max_attempts 次）；仍不达标在 model_version 打
@@ -885,14 +888,15 @@ async def _text_quality_gate(asset: dict, prompt: str, reference_urls,
         asset, dedupe_extra = await _dedupe_and_validate(
             regen, prompt, reference_urls, task_id, page_index, seen_hashes,
             page_body=expected_text, provider=provider,
-            layout_offset=layout_offset)
+            layout_offset=layout_offset, layout_bans=layout_bans)
         attempts += dedupe_extra
 
 
 async def _vl_quality_gate(asset: dict, prompt: str, reference_urls,
                            task_id, page_index: int, page_body: str,
                            seen_hashes: set, ref_mode: bool,
-                           provider: str = None, layout_offset: int = 0) -> tuple:
+                           provider: str = None, layout_offset: int = 0,
+                           layout_bans=None) -> tuple:
     """VL 视觉二审（2026-09-01 借鉴 8003 ai_review）：OCR 文字关卡之后再查
     OCR 发现不了的问题——文字量过载/缺失、实景图嵌入不协调（大小/位置/对比度/
     遮挡主体）。不达标时把 VL 给的调整建议拼进提示词自动重生成（最多
@@ -924,7 +928,7 @@ async def _vl_quality_gate(asset: dict, prompt: str, reference_urls,
         asset, dedupe_extra = await _dedupe_and_validate(
             regen, prompt, reference_urls, task_id, page_index, seen_hashes,
             page_body=page_body, provider=provider,
-            layout_offset=layout_offset)
+            layout_offset=layout_offset, layout_bans=layout_bans)
         extra += dedupe_extra
     return asset, extra, vl_cost
 
@@ -950,6 +954,9 @@ async def node_asset_gen(input_data: dict) -> dict:
         if task.plan_json and isinstance(task.plan_json, dict):
             plan_pages = {p.get("page"): p
                           for p in (task.plan_json.get("pages") or [])}
+        # 版式禁用（2026-09-02，迁移 019）：{页码str: [禁用槽位]}，
+        # 生图留白区与文字合成落版经 slot_for_page 顺延到未禁用槽位
+        layout_bans = task.layout_bans or {}
         pages = await session.execute(
             select(PageCopy).where(PageCopy.task_id == input_data["task_id"]))
         page_list = pages.scalars().all()
@@ -1023,28 +1030,57 @@ async def node_asset_gen(input_data: dict) -> dict:
     # 自定义生图模板（提示词库启用的）替代系统模板；排版轮换仍由代码追加
     image_template = await get_effective_prompt("image_gen", mode, owner_id)
     no_text = settings.text_composite_enabled
+    # 场景化视觉扩写（2026-09-02 移植 8003 实测有效的视觉导演层，迁移 020）：
+    # 无字合成模式下，把 6 页文案扩写成英文视觉描述（含每题材自定色彩方向 +
+    # 无字丰富度装置），gpt-image-2 对英文视觉指令理解更准。产出冻结到
+    # tasks.visual_json（定点重生成沿用不重扩写）；失败回退中文无字骨架。
+    visuals = None
+    if no_text:
+        try:
+            from src.services.visual_writer import write_page_visuals
+            bodies = [(p.body or "") for p in page_list][:6]
+            while len(bodies) < 6:
+                bodies.append("")
+            visuals = await write_page_visuals(
+                gen_style, style_desc, bodies,
+                llm_call=lambda pr: call_with_failover(
+                    pr, DEEPSEEK_MODEL, KIMI_MODEL, max_retries=1))
+            if visuals:
+                async with SessionLocal() as session:
+                    t = (await session.execute(
+                        select(Task).where(
+                            Task.id == input_data["task_id"]))).scalar_one()
+                    t.visual_json = visuals
+                    await session.commit()
+        except Exception:
+            traceback.print_exc()
+            visuals = None
     # 页位偏移（2026-09-02 反同质化）：布局/文字形式/合成槽位轮换起点随任务变
     layout_offset = _layout_offset_for(input_data["task_id"])
+
+    def _bans_for(page_i: int):
+        """该页被禁用的版式槽位（layout_bans 键为页码字符串）。"""
+        return set(layout_bans.get(str(page_i)) or []) or None
+
     # 通用模式有实图时提示词前缀换「实景图融入」版（无实图回退纯 AI 版）
     general_has_refs = (mode == "general" and bool(reference_urls))
-    prompts = [get_image_prompt(mode, p.body or "", i, template=image_template,
-                                no_text=no_text, style_desc=style_desc,
-                                page_subject=(page_subjects[i - 1]
-                                              if page_subjects and i <= 6 else None),
-                                has_refs=general_has_refs,
-                                layout_offset=layout_offset,
-                                plan_page=(plan_pages or {}).get(i))
+
+    def _prompt_for(i: int, body: str) -> str:
+        return get_image_prompt(
+            mode, body, i, template=image_template, no_text=no_text,
+            style_desc=style_desc,
+            page_subject=(page_subjects[i - 1]
+                          if page_subjects and i <= 6 else None),
+            has_refs=general_has_refs, layout_offset=layout_offset,
+            layout_bans=_bans_for(i), plan_page=(plan_pages or {}).get(i),
+            visual=(visuals["pages"][i - 1]
+                    if visuals and i <= 6 else None),
+            style_en=(visuals["style_en"] if visuals else None))
+
+    prompts = [_prompt_for(i, p.body or "")
                for i, p in enumerate(page_list, start=1)]
     while len(prompts) < 6:
-        prompts.append(get_image_prompt(mode, "", len(prompts) + 1,
-                                        template=image_template, no_text=no_text,
-                                        style_desc=style_desc,
-                                        page_subject=(page_subjects[len(prompts)]
-                                                      if page_subjects else None),
-                                        has_refs=general_has_refs,
-                                        layout_offset=layout_offset,
-                                        plan_page=(plan_pages or {}).get(
-                                            len(prompts) + 1)))
+        prompts.append(_prompt_for(len(prompts) + 1, ""))
     # 生成策略（2026-09-01 借鉴 8003 并行出图）：image_gen_parallel>1 时 6 页
     # Semaphore 限流并发（去重/校验仍在页内串行，seen_hashes 由 asyncio 单线程
     # 协程共享、无竞态）；=1 保持串行+间隔旧行为（防测试账户限流）
@@ -1066,12 +1102,12 @@ async def node_asset_gen(input_data: dict) -> dict:
         r, extra = await _dedupe_and_validate(
             r, prompts[i - 1], refs_i, input_data["task_id"], i, seen_hashes,
             page_body=page_body or "", provider=img_provider,
-            layout_offset=layout_offset)
+            layout_offset=layout_offset, layout_bans=_bans_for(i))
         # 文字质检：OCR 对撞分页文案，扭曲图自动重生成（文字扭曲是最高频客诉）
         r, text_extra, gate_cost = await _text_quality_gate(
             r, prompts[i - 1], refs_i, input_data["task_id"], i,
             page_body or "", seen_hashes, provider=img_provider,
-            layout_offset=layout_offset)
+            layout_offset=layout_offset, layout_bans=_bans_for(i))
         extra += text_extra
         # VL 视觉二审（借鉴 8003）：查 OCR 发现不了的文字过载/实景嵌入不协调。
         # 省成本口径与 8003 一致：有实图的页（compare/single/通用带图）全审，
@@ -1080,7 +1116,8 @@ async def node_asset_gen(input_data: dict) -> dict:
             r, vl_extra, vl_cost = await _vl_quality_gate(
                 r, prompts[i - 1], refs_i, input_data["task_id"], i,
                 page_body or "", seen_hashes, ref_mode=bool(refs_i),
-                provider=img_provider, layout_offset=layout_offset)
+                provider=img_provider, layout_offset=layout_offset,
+                layout_bans=_bans_for(i))
             extra += vl_extra
             gate_cost += vl_cost
         return r, extra, gate_cost

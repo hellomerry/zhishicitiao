@@ -60,9 +60,9 @@ class TestCompositePage:
     # ---- 6 页样式轮换（2026-08-31 用户反馈「全是黑框」）----
 
     @pytest.mark.parametrize("page_index,style", [
-        (1, "gradient_scrim"), (2, "glow_text"), (3, "light_panel"),
-        (4, "magazine_rule"), (5, "capsule_tags"), (6, "center_adaptive"),
-        (7, "gradient_scrim"),  # 页码取模：第 7 页回到封面样式
+        (1, "light_scrim"), (2, "light_banner"), (3, "light_panel"),
+        (4, "magazine_rule"), (5, "capsule_tags"), (6, "center_capsule"),
+        (7, "light_scrim"),  # 页码取模：第 7 页回到封面样式
     ])
     def test_style_dispatch_per_page(self, monkeypatch, page_index, style):
         called = []
@@ -80,28 +80,28 @@ class TestCompositePage:
                 for i in range(0, len(data), 3)]
         return sum(lums) / len(lums), min(lums), max(lums)
 
-    def test_glow_text_no_panel_on_bright_bg(self):
-        # P2 亮背景：无面板（区域均值仍亮）+ 深色文字（存在暗像素）
+    def test_light_banner_on_bright_bg(self):
+        # P2 亮背景：浅色通栏横幅（区域均值仍亮）+ 深色文字（存在暗像素）
         out = composite_page(_solid_image(color=(240, 238, 232)), "标题：正文内容", 2)
-        avg, dark, _ = self._zone_stats(Image.open(io.BytesIO(out)), 96, 88, 1056, 500)
-        assert avg > 180   # 没有深色面板压住
+        avg, dark, _ = self._zone_stats(Image.open(io.BytesIO(out)), 96, 40, 1056, 250)
+        assert avg > 180   # 浅色横幅托底
         assert dark < 90   # 有深色文字
 
-    def test_glow_text_white_on_dark_bg(self):
-        # P2 暗背景：白字（存在亮像素）+ 无浅面板（区域均值仍暗）
+    def test_light_banner_on_dark_bg(self):
+        # P2 暗背景：浅色横幅把顶部压亮（无深底白字）+ 深色文字
         out = composite_page(_solid_image(color=(30, 32, 38)), "标题：正文内容", 2)
-        avg, _, light = self._zone_stats(Image.open(io.BytesIO(out)), 96, 88, 1056, 500)
-        assert avg < 100
-        assert light > 200
+        avg, dark, _ = self._zone_stats(Image.open(io.BytesIO(out)), 96, 40, 1056, 250)
+        assert avg > 160
+        assert dark < 90
 
-    def test_gradient_scrim_darkens_bottom_naturally(self):
-        # P1 封面：底部渐变蒙版——底边被压暗，且蒙版上缘比底边亮（渐变非色块）
-        bright = _solid_image(color=(240, 238, 232))
-        img = Image.open(io.BytesIO(composite_page(bright, "大标题：一句钩子", 1)))
+    def test_light_scrim_lightens_bottom_naturally(self):
+        # P1 封面：底部浅色渐变蒙版——底边被提亮，且蒙版上缘比底边暗（渐变非色块）
+        dark_bg = _solid_image(color=(30, 32, 38))
+        img = Image.open(io.BytesIO(composite_page(dark_bg, "大标题：一句钩子", 1)))
         bottom = self._zone_stats(img, 96, 1500, 1056, 1530)[0]
         band_top = self._zone_stats(img, 96, 1000, 1056, 1030)[0]
-        assert bottom < 150
-        assert band_top > bottom + 30
+        assert bottom > 180
+        assert band_top < bottom - 60
 
     def test_light_panel_on_dark_bg(self):
         # P3 特写：浅色面板——暗背景底部面板中心应明显变亮
@@ -115,12 +115,46 @@ class TestCompositePage:
         _, _, light = self._zone_stats(Image.open(io.BytesIO(out)), 96, 88, 1056, 600)
         assert light > 220
 
-    def test_center_adaptive_dark_text_on_bright_bg(self):
-        # P6 总结：亮区深字、无面板（中部均值仍亮，存在暗文字像素）
-        out = composite_page(_solid_image(color=(240, 238, 232)), "总结：一句结论收尾。", 6)
-        avg, dark, _ = self._zone_stats(Image.open(io.BytesIO(out)), 96, 600, 1056, 950)
+    def test_center_capsule_light_on_dark_bg(self):
+        # P6 总结：浅色居中胶囊——暗背景中部被胶囊提亮，且有深色文字
+        out = composite_page(_solid_image(color=(30, 32, 38)), "总结：一句结论收尾。", 6)
+        # 取样正文胶囊内部（居中成组、y≈805-931、x≈352-800），不混入胶囊外暗背景
+        avg, dark, _ = self._zone_stats(Image.open(io.BytesIO(out)), 420, 830, 730, 910)
         assert avg > 180
         assert dark < 90
+
+    # ---- 经典彩色药丸（2026-09-02 老管线套图跟随）----
+
+    def test_classic_pills_style_override(self, monkeypatch):
+        # style="classic_pills" 显式指定时跳过槽位轮换
+        called = []
+        fake = {name: (lambda n: lambda img, t, b: called.append(n))(name)
+                for name in text_composite._STYLES}
+        monkeypatch.setattr(text_composite, "_STYLES", fake)
+        composite_page(_solid_image(), "标题：正文一句。", 6, style="classic_pills")
+        assert called == ["classic_pills"]
+
+    def test_classic_pills_colored_blocks_dark_text(self):
+        # 顶部深色大标题 + 淡绿/淡橙药丸色块（存在偏绿/偏橙像素），无深底白字
+        out = composite_page(_solid_image(),
+                             "核心就三点：只喂熟透的、只喂果肉、少量偶尔喂。",
+                             6, style="classic_pills")
+        img = Image.open(io.BytesIO(out)).convert("RGB")
+        avg, dark, _ = self._zone_stats(img, 96, 100, 1056, 260)
+        assert dark < 90  # 深色标题
+        data = img.crop((96, 260, 1056, 900)).resize((64, 64)).tobytes()
+        greenish = any(data[i + 1] > data[i] + 4 and data[i + 1] > data[i + 2] + 4
+                       for i in range(0, len(data), 3))
+        orangish = any(data[i] > data[i + 2] + 10 and data[i] > 200
+                       for i in range(0, len(data), 3))
+        assert greenish and orangish  # 淡绿+淡橙两种药丸色块都在
+        assert avg > 180  # 无深色面板
+
+    def test_classic_body_segments_split(self):
+        pills, footer = text_composite._classic_body_segments(
+            "只喂熟透的、只喂果肉、少量偶尔喂，适合新手。误食茎叶请就医。")
+        assert pills == ["只喂熟透的", "只喂果肉", "少量偶尔喂"]
+        assert footer == "适合新手。误食茎叶请就医。"
 
     # ---- 标点孤行修复（2026-08-31）----
 
