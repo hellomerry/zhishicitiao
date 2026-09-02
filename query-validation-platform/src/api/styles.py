@@ -42,6 +42,7 @@ def _row(r: StyleKeyword, owner_name: str = None) -> dict:
     return {
         "id": str(r.id), "style_name": r.style_name, "keywords": r.keywords,
         "description": r.description, "enabled": r.enabled,
+        "variants": r.variants or "",
         "owner_id": str(r.owner_id) if r.owner_id else None,
         "owner_name": owner_name,           # NULL owner → None（前端显示「公共」）
         "scope": "public" if r.owner_id is None else "mine",
@@ -67,6 +68,7 @@ class StyleIn(BaseModel):
     style_name: str
     keywords: str = ""
     description: str = ""
+    variants: str = ""        # 变体轴（迁移 016）：变体句池，换行/分号分隔
     enabled: bool = True
     public: bool = False      # 写入公共库（仅 admin；默认写个人库）
 
@@ -95,12 +97,14 @@ async def upsert_style(payload: StyleIn, actor: str = ""):
         if row:
             row.keywords = payload.keywords.strip()
             row.description = payload.description.strip()
+            row.variants = payload.variants.strip() or None
             row.enabled = payload.enabled
         else:
             session.add(StyleKeyword(
                 owner_id=None if payload.public else uid,
                 style_name=name, keywords=payload.keywords.strip(),
                 description=payload.description.strip(),
+                variants=payload.variants.strip() or None,
                 enabled=payload.enabled))
         await session.commit()
     await log_action(actor, "style_kb",

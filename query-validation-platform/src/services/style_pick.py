@@ -45,6 +45,102 @@ IMAGE_STYLE_LIBRARY = [
      "复古,怀旧,历史,老字号,非遗,经典"),
 ]
 
+# 内置风格变体轴（2026-09-02 反同质化方案 #2）：风格 = 签名层（描述词，固定
+# 识别度）+ 变体层（每任务按 task_id 采样一条追加）。变体只动「可轮换维度」
+# ——强调色/装饰元素/构图密度，绝不动签名（底色体系、标题双色、字体）。
+# DB 条目（个人/公共库）设了 variants 字段时优先用 DB 的，否则回本表
+_BUILTIN_VARIANTS = {
+    "自然写实暖调": [
+        "本篇强调暖色改用砖红（不用暖橘），装饰元素用角落波点",
+        "本篇强调暖色改用姜黄（不用暖橘），装饰元素用细线分隔与小圆点",
+        "本篇强调暖色改用枫叶橙（不用暖橘），装饰元素用角落干花/叶片剪影",
+        "本篇构图偏紧凑（留白约三成），强调暖色保持暖橘",
+    ],
+    "实拍产品渲染": [
+        "本篇强调色改用砖红（不用暖橘），产品角度取正侧面",
+        "本篇强调色改用墨蓝（不用暖橘），产品角度取三分之四俯视",
+        "本篇地面倒影略明显，背景加一道极浅的水平分色带",
+    ],
+    "治愈暖彩": [
+        "本篇主色偏蜜桃粉，装饰用圆润小云与圆点",
+        "本篇主色偏鹅黄，装饰用微笑太阳与小星星线稿",
+        "本篇主色偏薄荷绿，装饰用圆叶与小气泡",
+    ],
+    "真实摄影": [
+        "本篇取晨间侧光，色温偏暖",
+        "本篇取午后柔光，色温中性",
+        "本篇取窗边逆光轮廓，背景虚化更明显",
+    ],
+    "扁平极简": [
+        "本篇主色块用雾蓝系，辅色芥末黄",
+        "本篇主色块用鼠尾草绿系，辅色陶土橙",
+        "本篇主色块用灰紫系，辅色珊瑚粉",
+    ],
+    "3D渲染": [
+        "本篇材质偏哑光黏土质感，背景渐变取同色系浅淡过渡",
+        "本篇材质偏柔光塑料质感，加一处微型展台",
+        "本篇材质偏磨砂玻璃质感，背景带轻微景深光斑",
+    ],
+    "手绘线稿": [
+        "本篇水彩淡彩偏青绿调，纸张肌理稍明显",
+        "本篇水彩淡彩偏赭石调，线条更松",
+        "本篇水彩淡彩偏灰蓝调，加少量留白飞白",
+    ],
+    "杂志编辑": [
+        "本篇细金线改用细银线，灰底偏冷",
+        "本篇点缀色改用酒红，灰底偏暖",
+        "本篇点缀色改用墨绿，标题区左对齐",
+    ],
+    "信息图表": [
+        "本篇图表色板用蓝绿双色，导视用圆点序号",
+        "本篇图表色板用橙灰双色，导视用方形序号",
+        "本篇图表色板用紫黄双色，连接线用虚线",
+    ],
+    "复古印刷": [
+        "本篇双色调用蓝黑+米，噪点稍粗",
+        "本篇双色调用砖红+米，边框用复古细花边",
+        "本篇双色调用墨绿+米，做旧折痕感略明显",
+    ],
+}
+
+
+async def variant_for(style_name: str, owner_id=None, seed: int = 0) -> str | None:
+    """采样一条风格变体描述（反同质化，2026-09-02）。查找顺序：个人库条目
+    variants → 公共库 → 内置变体池；都没有返回 None。seed 通常为 task_id 的
+    稳定散列（同一任务永远采到同一条，重出图风格不漂移）。"""
+    name = (style_name or "").strip()
+    if not name:
+        return None
+    pool = None
+    try:
+        async with SessionLocal() as session:
+            if owner_id is not None:
+                row = (await session.execute(
+                    select(StyleKeyword).where(
+                        StyleKeyword.owner_id == owner_id,
+                        StyleKeyword.style_name == name))).scalars().first()
+                if row and row.variants:
+                    pool = row.variants
+            if pool is None:
+                row = (await session.execute(
+                    select(StyleKeyword).where(
+                        StyleKeyword.owner_id.is_(None),
+                        StyleKeyword.style_name == name))).scalars().first()
+                if row and row.variants:
+                    pool = row.variants
+    except Exception:
+        traceback.print_exc()
+        pool = None
+    frags = []
+    if pool:
+        frags = [f.strip() for f in re.split(r"[；;\n]", pool) if f.strip()]
+    if not frags:
+        frags = _BUILTIN_VARIANTS.get(name, [])
+    if not frags:
+        return None
+    return "本篇风格变体：" + frags[seed % len(frags)] + "。"
+
+
 _PICK_PROMPT = """你是小红书图文的视觉总监。根据下面的选题和正文摘要，从给定视觉风格库中选一种最贴合内容气质的图片风格。
 只输出风格名本身（必须与库中名称完全一致），不要输出任何其他内容。
 

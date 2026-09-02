@@ -6,7 +6,7 @@ const SettingsView = {
       // 风格关键词库（生图视觉风格自动匹配的训练数据，2026-08-28；迁移 012 起
       // 分「我的/公共」两区，公共区仅 admin 可写）
       styleItems: [],
-      styleForm: { style_name: '', keywords: '', description: '', enabled: true, public: false },
+      styleForm: { style_name: '', keywords: '', description: '', variants: '', enabled: true, public: false },
       styleImportMsg: '', styleImportPublic: false,
       // 样例图学习风格草稿（2026-09-02）：VL 提炼后填入下方表单，用户确认再保存
       styleLearnLoading: false, styleLearnMsg: '',
@@ -52,7 +52,7 @@ const SettingsView = {
     fmtTime,
     // ---------- 风格关键词库 ----------
     emptyStyleForm() {
-      return { style_name: '', keywords: '', description: '', enabled: true, public: false };
+      return { style_name: '', keywords: '', description: '', variants: '', enabled: true, public: false };
     },
     async loadStyles() {
       try {
@@ -362,6 +362,7 @@ const SettingsView = {
         <input v-model="styleForm.style_name" placeholder="风格名（如：科技蓝调）" required style="flex:1">
         <input v-model="styleForm.keywords" placeholder="匹配关键词（逗号分隔，如：手机,数码,芯片,参数）" style="flex:2">
         <input v-model="styleForm.description" placeholder="视觉描述词（注入生图提示词）" style="flex:2">
+        <input v-model="styleForm.variants" placeholder="变体轴（可选，分号分隔：每篇轮换的强调色/装饰，如 强调色用砖红；装饰用波点）" style="flex:2" title="变体轴：同一风格下每篇任务轮换采样的变体句，防空洞感；留空用内置变体">
         <label style="display:flex;align-items:center;gap:4px;font-size:14px;white-space:nowrap">
           <input type="checkbox" v-model="styleForm.enabled" style="width:auto"> 启用
         </label>

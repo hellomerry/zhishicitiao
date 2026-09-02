@@ -53,11 +53,14 @@ def split_title_body(page_body: str) -> tuple:
     return "", text
 
 
-def composite_page(image_bytes: bytes, page_body: str, page_index: int) -> bytes | None:
+def composite_page(image_bytes: bytes, page_body: str, page_index: int,
+                   offset: int = 0) -> bytes | None:
     """把分页文案用真实字体合成到 AI 背景图上，返回 PNG 字节（1152x1536）。
 
     字体缺失/图片解析失败返回 None——调用方保留原图，合成失败不阻塞出图。
-    """
+    offset（2026-09-02 反同质化）：排版样式/文字区槽位随任务偏移，必须与
+    生图提示词 get_image_prompt(layout_offset=...) 传同一值，否则 AI 预留的
+    留白区与合成落版位置错开。"""
     paths = _font_paths()
     if paths is None:
         print("[text_composite] 字体缺失（static/fonts/NotoSansSC-*.otf），跳过合成",
@@ -69,7 +72,7 @@ def composite_page(image_bytes: bytes, page_body: str, page_index: int) -> bytes
         img = _cover_resize(img)
         title, body = split_title_body(page_body)
         if title or body:
-            slot = ((page_index - 1) % 6) + 1
+            slot = ((page_index - 1 + offset) % 6) + 1
             _draw_text_block(img, title, body, slot)
         out = io.BytesIO()
         img.save(out, format="PNG")

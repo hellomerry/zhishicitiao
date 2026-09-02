@@ -261,6 +261,10 @@ async def partial_regen(task_id) -> dict:
         extra_gen = 0
         ocr_cost = 0.0
         done_pages = []
+        # 页位偏移与首次出图同值（按 task_id 推导，2026-09-02 反同质化），
+        # 保证重出页的留白区/合成落版与整套一致
+        from src.pipeline.nodes import _layout_offset_for
+        layout_offset = _layout_offset_for(task_id)
         for p in images_to_regen:
             prompt = get_image_prompt(mode, body_map.get(p, ""), p,
                                       template=image_template,
@@ -268,7 +272,8 @@ async def partial_regen(task_id) -> dict:
                                       style_desc=style_desc,
                                       page_subject=(page_subjects[p - 1]
                                                     if page_subjects and p <= 6
-                                                    else None))
+                                                    else None),
+                                      layout_offset=layout_offset)
             fb = image_reasons.get(p, []) + page_reasons.get(p, [])
             if fb:
                 prompt += ("\n\n【审核意见】该页上一版本被人工审核驳回："
@@ -278,7 +283,7 @@ async def partial_regen(task_id) -> dict:
             if not settings.mock_image_gen:
                 r, extra = await _dedupe_and_validate(
                     r, prompt, reference_urls, task_id, p, seen_hashes,
-                    page_body=body_map.get(p, ""))
+                    page_body=body_map.get(p, ""), layout_offset=layout_offset)
                 extra_gen += extra
             async with SessionLocal() as session:
                 # 旧版本不删除，降级为历史版本（is_active=false）保留，

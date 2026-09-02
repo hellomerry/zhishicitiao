@@ -222,14 +222,19 @@ def _apply_general_refs(prompt: str, has_refs: bool, no_text: bool) -> str:
 def get_image_prompt(mode: str, page_body: str, page_index: int = None,
                      template: str = None, no_text: bool = False,
                      style_desc: str = None, page_subject: str = None,
-                     has_refs: bool = False) -> str:
+                     has_refs: bool = False, layout_offset: int = 0) -> str:
+    # layout_offset（2026-09-02 反同质化）：分页布局/文字形式轮换的起点按任务
+    # 偏移——此前每个任务的第 N 页永远用第 N 种布局（页位同构，套与套摆一起
+    # 一眼模板感）；偏移后每套图 6 页仍各不同，但页位映射随任务变化。
+    # 无字版的偏移必须与 text_composite 的文字区/样式槽位用同一值（两边同步）
     if no_text:
         # 文字后期合成模式：AI 只画无字背景并预留文字区（固定内置模板，
         # 自定义模板都含文字要求、与此模式冲突）
         prompt = (_MODE_PREFIX_NOTEXT.get(mode, _MODE_PREFIX_NOTEXT["general"])
                   + _SHARED_IMAGE_STYLE_NOTEXT)
         if page_index:
-            prompt += _PAGE_LAYOUTS_NOTEXT[(page_index - 1) % len(_PAGE_LAYOUTS_NOTEXT)]
+            prompt += _PAGE_LAYOUTS_NOTEXT[(page_index - 1 + layout_offset)
+                                           % len(_PAGE_LAYOUTS_NOTEXT)]
         prompt = _apply_style_desc(prompt, style_desc)
         prompt = _apply_page_subject(prompt, page_subject)
         return _apply_general_refs(prompt, has_refs, True)
@@ -238,8 +243,9 @@ def get_image_prompt(mode: str, page_body: str, page_index: int = None,
     prompt = template.replace("{page_body}", page_body)
     if page_index:
         # 追加本页专属排版指令 + 文字呈现形式，让 6 页构图与文字载体都错开
-        prompt += _PAGE_LAYOUTS[(page_index - 1) % len(_PAGE_LAYOUTS)]
-        prompt += _TEXT_PRESENTATIONS[(page_index - 1) % len(_TEXT_PRESENTATIONS)]
+        prompt += _PAGE_LAYOUTS[(page_index - 1 + layout_offset) % len(_PAGE_LAYOUTS)]
+        prompt += _TEXT_PRESENTATIONS[(page_index - 1 + layout_offset)
+                                      % len(_TEXT_PRESENTATIONS)]
     prompt = _apply_style_desc(prompt, style_desc)
     prompt = _apply_page_subject(prompt, page_subject)
     return _apply_general_refs(prompt, has_refs, False)

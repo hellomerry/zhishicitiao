@@ -239,3 +239,23 @@ async def test_pinned_default_bypasses_learning():
 
     name, _ = await pick_image_style("q", "", owner_id=uid, llm_call=boom)
     assert name == "治愈暖彩"
+
+
+@pytest.mark.asyncio
+async def test_style_variants_field_roundtrip():
+    """变体轴字段（迁移 016）：保存/读取/更新；清空变 None 回退内置变体池。"""
+    user, uid = await _make_user()
+    async with _client() as c:
+        r = await c.post(f"/api/styles?actor={user}", json={
+            "style_name": "带变体风", "keywords": "k", "description": "d",
+            "variants": "强调色用砖红；装饰用波点"})
+        assert r.status_code == 200
+        items = (await c.get(f"/api/styles?actor={user}")).json()["items"]
+        mine = [i for i in items if i["scope"] == "mine"][0]
+        assert mine["variants"] == "强调色用砖红；装饰用波点"
+        # 更新清空 variants → 返回空串（DB 存 None，回退内置变体池）
+        await c.post(f"/api/styles?actor={user}", json={
+            "style_name": "带变体风", "keywords": "k", "description": "d",
+            "variants": ""})
+        items = (await c.get(f"/api/styles?actor={user}")).json()["items"]
+        assert [i for i in items if i["scope"] == "mine"][0]["variants"] == ""

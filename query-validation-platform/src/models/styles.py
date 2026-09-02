@@ -17,6 +17,9 @@ class StyleKeyword(Base):
     style_name = Column(Text, nullable=False)
     keywords = Column(Text, nullable=False, default="")
     description = Column(Text, nullable=False, default="")
+    # 变体轴（迁移 016，反同质化）：变体句池（换行/中文分号分隔），选定风格时
+    # 按任务采样一条追加进描述词；空则回退 style_pick 内置变体池
+    variants = Column(Text)
     enabled = Column(Boolean, nullable=False, default=True)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False,
                         default=lambda: datetime.now(timezone.utc))

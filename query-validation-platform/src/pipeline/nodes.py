@@ -17,6 +17,15 @@ GENERATED_DIR = Path(__file__).resolve().parent.parent.parent / "static" / "gene
 _EXT_BY_CTYPE = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
 
 
+def _layout_offset_for(task_id) -> int:
+    """分页布局/文字形式轮换起点（2026-09-02 反同质化）：按 task_id 取模，
+    同一任务内恒定（6 页布局仍互不相同），不同任务页位映射不同——此前
+    每个任务的第 N 页永远套第 N 种布局，套与套摆在一起一眼模板感。
+    get_image_prompt(layout_offset) 与 text_composite.composite_page(offset)
+    必须用本函数同一值（AI 预留留白区与合成落版对齐）。"""
+    return int(hashlib.md5(str(task_id).encode()).hexdigest(), 16) % 6
+
+
 def _persist_image(task_id, page_index, tag: str, data: bytes, ctype: str) -> str:
     """把图片字节落到 static/generated/，返回可浏览的本地路径。
 
@@ -736,11 +745,13 @@ async def _generate_single_asset(task_id, page_index: int, prompt: str,
 
 async def _dedupe_and_validate(asset: dict, prompt: str, reference_urls,
                                task_id, page_index: int, seen_hashes: set,
-                               page_body: str = "", provider: str = None) -> tuple:
+                               page_body: str = "", provider: str = None,
+                               layout_offset: int = 0) -> tuple:
     """内容级去重 + 尺寸校验：下载图片字节算内容 hash，与本任务已出图重复则换构图重生成一次；
     宽高比偏离 3:4 则在 model_version 上标记（交付导出时会统一归一到 1152x1536）。
     text_composite_enabled 且给了 page_body 时，AI 图只是无字背景：在本地化前把
     分页文案用真实字体合成上去（终极方案，从根上消除异体变形/伪汉字）。
+    layout_offset 必须与 get_image_prompt 的页位偏移同值（合成落版对齐留白区）。
     返回 (asset, 额外生成次数)。"""
     import io
     from src.gateway.ocr import fetch_image_bytes
@@ -763,7 +774,8 @@ async def _dedupe_and_validate(asset: dict, prompt: str, reference_urls,
         # 文字后期合成：把分页文案用真实字体合成到无字背景上（合成图固定 1152x1536）
         if settings.text_composite_enabled and (page_body or "").strip():
             from src.services.text_composite import composite_page
-            composited = composite_page(data, page_body, page_index)
+            composited = composite_page(data, page_body, page_index,
+                                        offset=layout_offset)
             if composited:
                 data, ctype = composited, "image/png"
                 asset["hash"] = hashlib.md5(data).hexdigest()
@@ -784,7 +796,8 @@ async def _dedupe_and_validate(asset: dict, prompt: str, reference_urls,
 
 async def _text_quality_gate(asset: dict, prompt: str, reference_urls,
                              task_id, page_index: int, expected_text: str,
-                             seen_hashes: set, provider: str = None) -> tuple:
+                             seen_hashes: set, provider: str = None,
+                             layout_offset: int = 0) -> tuple:
     """出图文字质检（2026-08-25 用户反馈「文字扭曲概率非常大」）：OCR 识别图上文字，
     与分页文案对撞，相似度低于阈值判为文字扭曲，换构图重生成
     （最多 settings.asset_text_max_attempts 次）；仍不达标在 model_version 打
@@ -822,14 +835,15 @@ async def _text_quality_gate(asset: dict, prompt: str, reference_urls,
             provider=provider)
         asset, dedupe_extra = await _dedupe_and_validate(
             regen, prompt, reference_urls, task_id, page_index, seen_hashes,
-            page_body=expected_text, provider=provider)
+            page_body=expected_text, provider=provider,
+            layout_offset=layout_offset)
         attempts += dedupe_extra
 
 
 async def _vl_quality_gate(asset: dict, prompt: str, reference_urls,
                            task_id, page_index: int, page_body: str,
                            seen_hashes: set, ref_mode: bool,
-                           provider: str = None) -> tuple:
+                           provider: str = None, layout_offset: int = 0) -> tuple:
     """VL 视觉二审（2026-09-01 借鉴 8003 ai_review）：OCR 文字关卡之后再查
     OCR 发现不了的问题——文字量过载/缺失、实景图嵌入不协调（大小/位置/对比度/
     遮挡主体）。不达标时把 VL 给的调整建议拼进提示词自动重生成（最多
@@ -860,7 +874,8 @@ async def _vl_quality_gate(asset: dict, prompt: str, reference_urls,
         extra += 1
         asset, dedupe_extra = await _dedupe_and_validate(
             regen, prompt, reference_urls, task_id, page_index, seen_hashes,
-            page_body=page_body, provider=provider)
+            page_body=page_body, provider=provider,
+            layout_offset=layout_offset)
         extra += dedupe_extra
     return asset, extra, vl_cost
 
@@ -938,6 +953,15 @@ async def node_asset_gen(input_data: dict) -> dict:
                 query, draft_body, owner_id=owner_id,
                 llm_call=lambda p: call_with_failover(
                     p, DEEPSEEK_MODEL, KIMI_MODEL, max_retries=1))
+            # 风格变体轴（2026-09-02 反同质化 #2）：在签名描述词后追加一条按
+            # task_id 采样的变体（强调色/装饰/密度轮换），同一用户同一风格
+            # 每篇产出不重样；随快照冻结，重出图不漂移
+            from src.services.style_pick import variant_for
+            seed = int(hashlib.md5(str(input_data["task_id"]).encode())
+                       .hexdigest(), 16)
+            variant = await variant_for(gen_style, owner_id, seed)
+            if variant:
+                style_desc = (style_desc or "") + variant
             async with SessionLocal() as session:
                 t = (await session.execute(
                     select(Task).where(Task.id == input_data["task_id"]))).scalar_one()
@@ -978,13 +1002,16 @@ async def node_asset_gen(input_data: dict) -> dict:
     # 自定义生图模板（提示词库启用的）替代系统模板；排版轮换仍由代码追加
     image_template = await get_effective_prompt("image_gen", mode, owner_id)
     no_text = settings.text_composite_enabled
+    # 页位偏移（2026-09-02 反同质化）：布局/文字形式/合成槽位轮换起点随任务变
+    layout_offset = _layout_offset_for(input_data["task_id"])
     # 通用模式有实图时提示词前缀换「实景图融入」版（无实图回退纯 AI 版）
     general_has_refs = (mode == "general" and bool(reference_urls))
     prompts = [get_image_prompt(mode, p.body or "", i, template=image_template,
                                 no_text=no_text, style_desc=style_desc,
                                 page_subject=(page_subjects[i - 1]
                                               if page_subjects and i <= 6 else None),
-                                has_refs=general_has_refs)
+                                has_refs=general_has_refs,
+                                layout_offset=layout_offset)
                for i, p in enumerate(page_list, start=1)]
     while len(prompts) < 6:
         prompts.append(get_image_prompt(mode, "", len(prompts) + 1,
@@ -992,7 +1019,8 @@ async def node_asset_gen(input_data: dict) -> dict:
                                         style_desc=style_desc,
                                         page_subject=(page_subjects[len(prompts)]
                                                       if page_subjects else None),
-                                        has_refs=general_has_refs))
+                                        has_refs=general_has_refs,
+                                        layout_offset=layout_offset))
     # 生成策略（2026-09-01 借鉴 8003 并行出图）：image_gen_parallel>1 时 6 页
     # Semaphore 限流并发（去重/校验仍在页内串行，seen_hashes 由 asyncio 单线程
     # 协程共享、无竞态）；=1 保持串行+间隔旧行为（防测试账户限流）
@@ -1013,11 +1041,13 @@ async def node_asset_gen(input_data: dict) -> dict:
         page_body = page_list[i - 1].body if i - 1 < len(page_list) else ""
         r, extra = await _dedupe_and_validate(
             r, prompts[i - 1], refs_i, input_data["task_id"], i, seen_hashes,
-            page_body=page_body or "", provider=img_provider)
+            page_body=page_body or "", provider=img_provider,
+            layout_offset=layout_offset)
         # 文字质检：OCR 对撞分页文案，扭曲图自动重生成（文字扭曲是最高频客诉）
         r, text_extra, gate_cost = await _text_quality_gate(
             r, prompts[i - 1], refs_i, input_data["task_id"], i,
-            page_body or "", seen_hashes, provider=img_provider)
+            page_body or "", seen_hashes, provider=img_provider,
+            layout_offset=layout_offset)
         extra += text_extra
         # VL 视觉二审（借鉴 8003）：查 OCR 发现不了的文字过载/实景嵌入不协调。
         # 省成本口径与 8003 一致：有实图的页（compare/single/通用带图）全审，
@@ -1026,7 +1056,7 @@ async def node_asset_gen(input_data: dict) -> dict:
             r, vl_extra, vl_cost = await _vl_quality_gate(
                 r, prompts[i - 1], refs_i, input_data["task_id"], i,
                 page_body or "", seen_hashes, ref_mode=bool(refs_i),
-                provider=img_provider)
+                provider=img_provider, layout_offset=layout_offset)
             extra += vl_extra
             gate_cost += vl_cost
         return r, extra, gate_cost
