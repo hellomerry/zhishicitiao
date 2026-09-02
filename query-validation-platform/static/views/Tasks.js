@@ -573,7 +573,14 @@ const TasksView = {
 
     <div v-if="detail || detailError" class="drawer-mask" @click.self="close">
       <div class="drawer">
-        <p v-if="detailError" class="form-error">{{ detailError }}</p>
+        <template v-if="detailError">
+          <div class="drawer-head">
+            <h2>任务详情加载失败</h2>
+            <button class="btn btn-outline" @click="close">关闭</button>
+          </div>
+          <p class="form-error">{{ detailError }}</p>
+          <p class="muted" style="font-size:13px">可关闭后重试；若反复出现请强刷页面（Ctrl+F5）后再试。</p>
+        </template>
         <template v-if="detail">
           <div class="drawer-head">
             <h2>{{ detailTask.query }}</h2>

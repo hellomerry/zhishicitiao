@@ -83,3 +83,17 @@ _LEGACY_ROUTES = {
 
 for _path, _target in _LEGACY_ROUTES.items():
     app.add_api_route(_path, lambda t=_target: RedirectResponse(url=t), methods=["GET"])
+
+
+# 前端错误信标（2026-09-02）：app.js 捕获 window.onerror / unhandledrejection /
+# Vue errorHandler 后 POST 到这里，打进容器日志——排查「只在用户浏览器出现」的
+# 前端报错（如 admin 任务详情打不开）时不必让用户截 Console。
+@app.post("/api/client_errors")
+async def client_errors(payload: dict):
+    import logging
+    logging.getLogger("uvicorn.error").warning(
+        "[client_error] user=%s kind=%s msg=%s stack=%s href=%s",
+        payload.get("user"), payload.get("kind"),
+        str(payload.get("msg"))[:500], str(payload.get("stack"))[:800],
+        payload.get("href"))
+    return {"ok": True}

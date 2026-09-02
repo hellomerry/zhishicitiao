@@ -124,7 +124,7 @@ const AppLayout = {
     <div class="content"><slot /></div>
 
     <div v-if="obShow" class="drawer-mask">
-      <div class="export-modal" style="width:min(720px,94vw);top:8vh">
+      <div class="export-modal" style="width:720px;width:min(720px,94vw);top:8vh">
         <div class="drawer-head">
           <h2>🎨 选择你的图文风格</h2>
         </div>
